@@ -1,3 +1,32 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ===== VARIABLES DE COLOR GLOBALES ===== */
+/* Para cambiar la paleta de colores, edita SOLO este bloque */
+:root {
+  --color-primary:   #cc0000;   /* Rojo institucional */
+  --color-primary-dark: #990000;
+  --color-primary-light: #ff3333;
+  --color-site-white: #ffffff;   /* Blanco predominante */
+  --color-site-black: #111111;   /* Negro */
+  --color-bg:        #f7f7f7;    /* Fondo general */
+  --color-surface:   #ffffff;    /* Superficies de tarjetas */
+  --color-border:    #e0e0e0;    /* Bordes sutiles */
+  --color-text:      #111111;    /* Texto principal */
+  --color-text-muted:#666666;    /* Texto secundario */
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Scrollbar personalizada */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--color-bg); }
+::-webkit-scrollbar-thumb { background: var(--color-primary); border-radius: 3px; }

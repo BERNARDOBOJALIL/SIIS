@@ -1,9 +1,5 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-}
+/* App.css — sin estilos por defecto de Vite */
+
 
 .logo {
   height: 6em;
