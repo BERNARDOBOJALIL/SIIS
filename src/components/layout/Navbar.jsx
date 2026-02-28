@@ -36,10 +36,9 @@ export default function Navbar() {
 
         <Link to="/" className="flex items-center gap-2 select-none">
           <img
-            src="/Logo_proyecto.svg"
+            src="/logo_fblanco_tnegro.png"
             alt="SIIS"
             className="h-8 w-auto"
-            style={{ filter: 'brightness(0) invert(1)' }}
           />
         </Link>
       </div>

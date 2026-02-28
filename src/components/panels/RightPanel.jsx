@@ -52,7 +52,7 @@ export default function RightPanel() {
 
   return (
     <aside
-      className="flex flex-col h-full overflow-y-auto"
+      className="right-panel flex flex-col h-full overflow-y-auto"
       style={{
         background:  'var(--color-site-white)',
         borderLeft:  '1px solid var(--color-border)',
@@ -60,18 +60,21 @@ export default function RightPanel() {
     >
       {/* ── Logo + Reloj ─────────────────────────────── */}
       <div
-        className="flex flex-col items-center gap-2 py-5 px-4 shrink-0"
+        className="right-panel-header flex flex-col items-center gap-2 py-5 px-4 shrink-0"
         style={{
           background:    'var(--color-site-white)',
           borderBottom:  '2px solid var(--color-primary)',
         }}
       >
-        {/* Logo IDIT */}
         <img
           src="/logo_idit.png"
           alt="IDIT"
           className="h-14 w-auto object-contain"
         />
+        <p className="text-[10px] uppercase tracking-widest font-semibold text-center"
+          style={{ color: 'var(--color-text-muted)' }}>
+          Sistema de Información
+        </p>
 
         {/* Reloj */}
         <div className="mt-1 flex items-baseline gap-0.5 tabular-nums select-none">
@@ -100,7 +103,7 @@ export default function RightPanel() {
       </div>
 
       {/* ── Disponibilidad ─────────────────────────────── */}
-      <section className="px-3.5 pt-4 pb-3 shrink-0">
+      <section className="right-panel-rooms px-3.5 pt-4 pb-3 flex-1 min-h-0 flex flex-col">
         {/* Encabezado */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-1.5">
@@ -131,7 +134,7 @@ export default function RightPanel() {
         </div>
 
         {/* Lista de salones */}
-        <div className="flex flex-col gap-1.5">
+        <div className="room-list flex flex-col gap-1.5 overflow-y-auto min-h-0">
           {SALONES.map(salon => {
             const TipoIcon = TIPO_ICON[salon.tipo] || BookOpen
             return (
@@ -139,7 +142,7 @@ export default function RightPanel() {
                 key={salon.id}
                 className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-default"
                 style={{
-                  background: salon.disponible ? '#f0fdf4' : '#fff1f2',
+                    
                   border:     `1px solid ${salon.disponible ? '#bbf7d0' : '#fecdd3'}`,
                 }}
               >
@@ -168,7 +171,7 @@ export default function RightPanel() {
       <div className="mx-3.5" style={{ height: 1, background: 'var(--color-border)' }} />
 
       {/* ── Leyenda del mapa ───────────────────────────── */}
-      <section className="px-3.5 pt-3 pb-5">
+      <section className="right-panel-legend px-3.5 pt-3 pb-5">
         <div className="flex items-center gap-1.5 mb-3">
           <MapPin size={14} style={{ color: 'var(--color-primary)' }} />
           <h2 className="text-[11px] font-bold uppercase tracking-wider"
@@ -190,22 +193,6 @@ export default function RightPanel() {
               </span>
             </div>
           ))}
-        </div>
-
-        {/* Preview mini mapa */}
-        <div
-          className="mt-3 rounded-xl overflow-hidden flex items-center justify-center"
-          style={{
-            height:     '80px',
-            background: 'linear-gradient(135deg, #f5f5f5 0%, #ebebeb 100%)',
-            border:     '1px dashed var(--color-border)',
-          }}
-        >
-          <div className="flex flex-col items-center gap-1"
-            style={{ color: 'var(--color-text-muted)' }}>
-            <MapPin size={18} />
-            <span className="text-[10px]">Vista previa del mapa</span>
-          </div>
         </div>
 
         {/* Hora actualización */}

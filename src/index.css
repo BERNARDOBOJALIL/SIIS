@@ -30,3 +30,248 @@ body {
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--color-bg); }
 ::-webkit-scrollbar-thumb { background: var(--color-primary); border-radius: 3px; }
+
+/* ============================================================
+   TOOLBAR — responsive button text
+   ============================================================ */
+.btn-short { display: none; }
+.btn-label { display: inline; }
+
+/* ============================================================
+   LABELS OVERLAY — screen-space anti-overlap system
+   ============================================================ */
+.labels-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+  transition: opacity 0.15s ease;
+}
+.labels-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.label-connector {
+  stroke-width: 2.2;
+  stroke-dasharray: 5 3;
+  opacity: 0.72;
+  fill: none;
+  filter: drop-shadow(0 0 1.5px rgba(0,0,0,.45));
+}
+
+.room-label {
+  --label-accent: #94a3b8;
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+  background: rgba(10, 10, 10, 0.76);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 6px;
+  padding: 4px 10px 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #fff;
+  white-space: nowrap;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.28);
+  border-left: 3px solid var(--label-accent);
+  user-select: none;
+  pointer-events: none;
+}
+.room-label .label-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--label-accent);
+  box-shadow: 0 0 6px var(--label-accent);
+  animation: dot-pulse 2.4s ease-in-out infinite;
+}
+.room-label .label-text {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--label-accent); }
+  50%      { opacity: 0.55; box-shadow: 0 0 10px var(--label-accent); }
+}
+
+/* ============================================================
+   SELECTED PIECE BADGE  (React overlay)
+   ============================================================ */
+.selected-badge-wrap {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  pointer-events: none;
+  animation: badge-enter 0.5s cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+@keyframes badge-enter {
+  from { opacity: 0; transform: translateX(-50%) translateY(14px) scale(0.92); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0)    scale(1);    }
+}
+.selected-badge {
+  --badge-accent: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(10, 10, 10, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 14px;
+  padding: 10px 22px 10px 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06);
+  border-left: 4px solid var(--badge-accent);
+}
+.selected-badge-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--badge-accent);
+  box-shadow: 0 0 10px var(--badge-accent);
+  flex-shrink: 0;
+}
+.selected-badge-name {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #fff;
+  white-space: nowrap;
+}
+.selected-badge-status {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--badge-accent);
+  white-space: nowrap;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,0.12);
+}
+
+/* ============================================================
+   RESPONSIVE  — all breakpoints + kiosk portrait
+   ============================================================ */
+
+/* Small landscape / narrow screens */
+@media (max-width: 860px) and (orientation: landscape) {
+  .home-panel {
+    width: clamp(200px, 32%, 260px) !important;
+  }
+}
+
+/* ── PORTRAIT / VERTICAL KIOSK ── */
+@media (orientation: portrait) {
+  /* Stack vertically */
+  .home-layout {
+    flex-direction: column !important;
+  }
+  .home-viewer {
+    flex: 1 1 62% !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--color-border) !important;
+    min-height: 0;
+  }
+  .home-panel {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    max-height: 38% !important;
+    overflow: hidden !important;
+  }
+
+  /* Panel flows horizontally */
+  .right-panel {
+    flex-direction: row !important;
+    overflow-x: auto;
+    overflow-y: hidden !important;
+    border-left: none !important;
+    border-top: 1px solid var(--color-border) !important;
+  }
+  .right-panel-header {
+    flex-direction: column !important;
+    min-width: 155px;
+    border-bottom: none !important;
+    border-right: 2px solid var(--color-primary) !important;
+    padding: 12px !important;
+  }
+  .right-panel-rooms {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto !important;
+    padding: 10px !important;
+  }
+  .right-panel-rooms .room-list {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)) !important;
+    gap: 6px !important;
+  }
+  .right-panel-legend {
+    min-width: 180px;
+    overflow-y: auto;
+    padding: 10px !important;
+  }
+
+  /* Bigger labels for touch */
+  .room-label {
+    font-size: 12px;
+    padding: 5px 12px 5px 10px;
+    border-radius: 8px;
+    border-left-width: 4px;
+  }
+  .room-label .label-dot {
+    width: 9px;
+    height: 9px;
+  }
+
+  /* Bigger badge */
+  .selected-badge {
+    padding: 12px 26px 12px 18px;
+    border-radius: 16px;
+  }
+  .selected-badge-name {
+    font-size: 18px;
+  }
+  .selected-badge-status {
+    font-size: 12px;
+  }
+}
+
+/* Very narrow portrait (phones) */
+@media (max-width: 480px) and (orientation: portrait) {
+  .home-viewer { flex: 1 1 55% !important; }
+  .home-panel  { max-height: 45% !important; }
+  .right-panel-header { min-width: 120px; }
+  .right-panel-rooms .room-list {
+    grid-template-columns: 1fr !important;
+  }
+  /* Compact toolbar */
+  .btn-label { display: none !important; }
+  .btn-short { display: inline !important; }
+  .viewer-toolbar { gap: 4px !important; padding: 4px 6px !important; }
+  .toolbar-divider { display: none !important; }
+}
+
+/* Very tall portrait (kiosk monitors ≥ 900px wide) */
+@media (orientation: portrait) and (min-width: 900px) {
+  .room-label {
+    font-size: 14px;
+    padding: 6px 14px 6px 11px;
+  }
+  .room-label .label-dot { width: 11px; height: 11px; }
+  .selected-badge-name { font-size: 22px; }
+  .selected-badge-dot  { width: 14px; height: 14px; }
+}
