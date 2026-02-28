@@ -17,7 +17,7 @@ const C_SELECTED = new THREE.Color(0xcc0000)
 const C_FOUND    = new THREE.Color(0xff9500)
 
 const ANIM_HOVER   = 280
-const ANIM_CAM     = 1800
+const ANIM_CAM     = 2800
 const ANIM_LIFT    = 700
 const LIFT_DELAY   = 0.72
 const HOVER_LIFT   = 2.4
@@ -77,7 +77,7 @@ function disposeObj(obj) {
   })
 }
 
-function fitCamera(bbox, camera, elevDeg, padMult) {
+function fitCamera(bbox, camera, elevDeg, padMult, azimuthRad = 0) {
   const sphere   = bbox.getBoundingSphere(new THREE.Sphere())
   const fovHalf  = THREE.MathUtils.degToRad(camera.fov / 2)
   const hFovHalf = Math.atan(Math.tan(fovHalf) * camera.aspect)
@@ -85,10 +85,11 @@ function fitCamera(bbox, camera, elevDeg, padMult) {
   const distH = sphere.radius / Math.tan(hFovHalf)
   const dist  = Math.max(distV, distH) * padMult
   const elev  = THREE.MathUtils.degToRad(elevDeg)
+  const horiz = dist * Math.cos(elev)
   const pos   = new THREE.Vector3(
-    sphere.center.x,
-    sphere.center.y + dist * Math.sin(elev),
-    sphere.center.z + dist * Math.cos(elev),
+    sphere.center.x + horiz * Math.sin(azimuthRad),
+    sphere.center.y + dist  * Math.sin(elev),
+    sphere.center.z + horiz * Math.cos(azimuthRad),
   )
   return { pos, target: sphere.center.clone() }
 }
@@ -303,7 +304,7 @@ export default function ThreeViewer() {
     setLabelsVisible(false)
 
     const bbox = new THREE.Box3().setFromObject(entry.mesh)
-    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 90, 1.45)
+    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 89.9, 1.45)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
     const pieceSize = bbox.getSize(new THREE.Vector3())
@@ -414,6 +415,7 @@ export default function ThreeViewer() {
       _dirTmp.copy(a.fromDir).applyQuaternion(_qSlerp)
       const d = a.fromDist + (a.toDist - a.fromDist) * ease
       R.current.camera.position.set(tx + _dirTmp.x * d, ty + _dirTmp.y * d, tz + _dirTmp.z * d)
+      R.current.camera.lookAt(tx, ty, tz)
       if (a.t >= 1) {
         R.current.camera.position.copy(a.toPos)
         R.current.controls.target.copy(a.toTarget)
@@ -525,7 +527,8 @@ export default function ThreeViewer() {
       const dt = timer.getDelta()
       tickMeshAnims(dt)
       tickCamAnim(dt)
-      controls.update()
+      if (!camAnim.current.active) controls.update()
+      else controls.target.copy(controls.target) // keep internal state in sync
       renderer.render(scene, camera)
       updateLabelsOverlay()
     }
