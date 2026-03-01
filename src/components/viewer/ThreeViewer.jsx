@@ -4,13 +4,29 @@ import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
-  Search, X, Layers, Building2, RotateCcw, Info,
+  Search, X, Layers, Building2, RotateCcw, Info, Route,
 } from 'lucide-react'
 
 const MODELS = [
   { file: '/Ensamblaje2_PB.glb', label: 'Planta Baja', short: 'PB' },
   { file: '/P1_ENSAMB_v2.glb',   label: 'Planta 1',    short: 'P1' },
 ]
+
+/* ── Pieza-entrada por piso (nombre ORIGINAL del GLB) ── */
+const ENTRANCE_MESH = ['Solido 44-2', 'Solido 27-1']
+
+/* ── Mapeo de nombres: nombreOrigGLB → nombreMostrado.
+     Los que no aparezcan se auto-numeran PB-01, P1-01… ── */
+const ROOM_NAMES = [
+  { /* Planta Baja */
+    'Solido 44-2': 'Entrada Principal',
+  },
+  { /* Planta 1 */
+    'Solido 27-1': 'Entrada P1',
+  },
+]
+
+const NUM_PATH_DOTS = 5
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
 const C_SELECTED = new THREE.Color(0xcc0000)
@@ -116,10 +132,13 @@ export default function ThreeViewer() {
     fromDist: 0, toDist: 0,
     fromDir: new THREE.Vector3(0, 0, 1),
     qEnd: new THREE.Quaternion(),
+    fromUp: new THREE.Vector3(0, 1, 0),
+    toUp:   new THREE.Vector3(0, 1, 0),
   })
   const handlersRef = useRef({ onPointerMove: null, onClick: null })
   const idleTimerRef = useRef(null)   // timeout de inactividad 30s
   const labelsDataRef = useRef([])
+  const pathRef = useRef({ tube: null, dots: null, curve: null, dotGeo: null })
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -128,6 +147,7 @@ export default function ThreeViewer() {
   const [search,        setSearch]        = useState('')
   const [selectedName,  setSelectedName]  = useState(null)
   const [selectedStatus, setSelectedStatus] = useState(null)
+  const [showingPath,   setShowingPath]   = useState(false)
 
   /* ── Limpia todas las etiquetas del overlay ── */
   function cleanupLabels() {
@@ -169,6 +189,12 @@ export default function ThreeViewer() {
     const toDist   = toOff.length()   || 1
     const fromDir  = fromOff.divideScalar(fromDist)
     const toDir    = toOff.divideScalar(toDist)
+    /* Up vector: if destination looks straight down, use Z- as up to
+       avoid gimbal lock; otherwise standard Y-up */
+    const fromUp = camera.up.clone()
+    const toUp   = Math.abs(toDir.y) > 0.99
+      ? new THREE.Vector3(0, 0, -1)
+      : new THREE.Vector3(0, 1, 0)
     camAnim.current = {
       active: true, t: 0,
       fromTarget: fTgt, toTarget: tTgt,
@@ -176,6 +202,7 @@ export default function ThreeViewer() {
       fromDist, toDist,
       fromDir,
       qEnd: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir),
+      fromUp, toUp,
     }
   }
 
@@ -211,6 +238,7 @@ export default function ThreeViewer() {
     setSelectedName(null)
     setSelectedStatus(null)
     setLabelsVisible(true)
+    cleanupPath()
   }
 
   function resetView() {
@@ -234,6 +262,79 @@ export default function ThreeViewer() {
   function clearIdleTimer() {
     clearTimeout(idleTimerRef.current)
     idleTimerRef.current = null
+  }
+
+  /* ── Ruta animada: tubo + esferas que fluyen ── */
+  function createPath(fromWP, toWP) {
+    const { scene } = R.current
+    cleanupPath()
+    const groundY = Math.min(fromWP.y, toWP.y) + 0.12
+    const from = new THREE.Vector3(fromWP.x, groundY, fromWP.z)
+    const to   = new THREE.Vector3(toWP.x,   groundY, toWP.z)
+    const dist = from.distanceTo(to)
+    const mid  = from.clone().lerp(to, 0.5)
+    mid.y += Math.max(dist * 0.04, 0.3)
+    const curve = new THREE.CatmullRomCurve3([from, mid, to])
+    const segs  = Math.max(32, Math.round(dist * 4))
+    const tubeGeo = new THREE.TubeGeometry(curve, segs, 0.10, 8, false)
+    const tubeMat = new THREE.MeshStandardMaterial({
+      color: 0xff3b3b, emissive: 0xff2200, emissiveIntensity: 0.6,
+      transparent: true, opacity: 0.45, depthWrite: false,
+    })
+    const tube = new THREE.Mesh(tubeGeo, tubeMat)
+    scene.add(tube)
+    const dotGeo = new THREE.SphereGeometry(0.22, 12, 12)
+    const dots = []
+    for (let i = 0; i < NUM_PATH_DOTS; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xffdd00, emissive: 0xffaa00, emissiveIntensity: 1.2,
+        transparent: true, opacity: 1,
+      })
+      const dot = new THREE.Mesh(dotGeo, mat)
+      scene.add(dot)
+      dots.push(dot)
+    }
+    pathRef.current = { tube, dots, curve, dotGeo }
+  }
+
+  function cleanupPath() {
+    const p = pathRef.current
+    if (p.tube) {
+      R.current.scene?.remove(p.tube)
+      p.tube.geometry.dispose()
+      p.tube.material.dispose()
+    }
+    if (p.dots) {
+      p.dots.forEach(d => { R.current.scene?.remove(d); d.material.dispose() })
+    }
+    if (p.dotGeo) p.dotGeo.dispose()
+    pathRef.current = { tube: null, dots: null, curve: null, dotGeo: null }
+    setShowingPath(false)
+  }
+
+  function handleShowPath() {
+    if (pathRef.current.curve) { cleanupPath(); return }
+    const sel = selectedRef.current
+    if (!sel) return
+    const entName = ENTRANCE_MESH[activeModel]
+    const entrance = meshes.current.find(e =>
+      e.origName === entName || e.origName.toLowerCase() === entName.toLowerCase()
+    )
+    if (!entrance) {
+      console.warn('[SIIS] Entrada no encontrada:', entName,
+        'Meshes disponibles:', meshes.current.map(e => e.origName))
+      return
+    }
+    if (entrance === sel) return // ya estás en la entrada
+    createPath(entrance.origWorldPos, sel.origWorldPos)
+    setShowingPath(true)
+    const { camera } = R.current
+    const pathBox = new THREE.Box3()
+    pathBox.expandByPoint(entrance.origWorldPos)
+    pathBox.expandByPoint(sel.origWorldPos)
+    pathBox.expandByScalar(5)
+    const { pos, target } = fitCamera(pathBox, camera, 55, 1.3)
+    startCamAnim(pos, target)
   }
 
   function switchModel(idx) {
@@ -304,7 +405,7 @@ export default function ThreeViewer() {
     setLabelsVisible(false)
 
     const bbox = new THREE.Box3().setFromObject(entry.mesh)
-    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 89.9, 1.45)
+    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 90, 1.45)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
     const pieceSize = bbox.getSize(new THREE.Vector3())
@@ -400,6 +501,7 @@ export default function ThreeViewer() {
 
     const _qSlerp = new THREE.Quaternion()
     const _dirTmp = new THREE.Vector3()
+    const _upTmp  = new THREE.Vector3()
     function tickCamAnim(dt) {
       const a = camAnim.current
       if (!a.active) return
@@ -415,10 +517,15 @@ export default function ThreeViewer() {
       _dirTmp.copy(a.fromDir).applyQuaternion(_qSlerp)
       const d = a.fromDist + (a.toDist - a.fromDist) * ease
       R.current.camera.position.set(tx + _dirTmp.x * d, ty + _dirTmp.y * d, tz + _dirTmp.z * d)
+      /* Interpolate up vector to avoid gimbal lock at 90° */
+      _upTmp.lerpVectors(a.fromUp, a.toUp, ease).normalize()
+      R.current.camera.up.copy(_upTmp)
       R.current.camera.lookAt(tx, ty, tz)
       if (a.t >= 1) {
         R.current.camera.position.copy(a.toPos)
         R.current.controls.target.copy(a.toTarget)
+        R.current.camera.up.copy(a.toUp)
+        R.current.camera.lookAt(a.toTarget)
         a.active = false
       }
     }
@@ -497,6 +604,11 @@ export default function ThreeViewer() {
           lbl.lineEl.style.display = 'none'
           continue
         }
+        if (!lbl.initialized) {
+          lbl.displayX = lbl.cx
+          lbl.displayY = lbl.cy
+          lbl.initialized = true
+        }
         lbl.displayX += (lbl.cx - lbl.displayX) * LERP
         lbl.displayY += (lbl.cy - lbl.displayY) * LERP
         const dx = lbl.displayX - lbl.cx
@@ -521,12 +633,27 @@ export default function ThreeViewer() {
       }
     }
 
+    function tickPath() {
+      const p = pathRef.current
+      if (!p.curve || !p.dots) return
+      const now = performance.now() * 0.001
+      for (let i = 0; i < p.dots.length; i++) {
+        const t = ((now * 0.3) + i / p.dots.length) % 1
+        p.dots[i].position.copy(p.curve.getPointAt(t))
+        const fade = Math.sin(t * Math.PI)
+        p.dots[i].material.opacity = 0.3 + fade * 0.7
+        p.dots[i].scale.setScalar(0.7 + fade * 0.5)
+      }
+      if (p.tube) p.tube.material.opacity = 0.35 + Math.sin(now * 3.5) * 0.12
+    }
+
     function loop() {
       r.raf = requestAnimationFrame(loop)
       timer.update()
       const dt = timer.getDelta()
       tickMeshAnims(dt)
       tickCamAnim(dt)
+      tickPath()
       if (!camAnim.current.active) controls.update()
       else controls.target.copy(controls.target) // keep internal state in sync
       renderer.render(scene, camera)
@@ -544,6 +671,7 @@ export default function ThreeViewer() {
       cancelAnimationFrame(r.raf)
       clearTimeout(idleTimerRef.current)
       cleanupLabels()
+      cleanupPath()
       renderer.domElement.removeEventListener('pointermove', pmWrapper)
       renderer.domElement.removeEventListener('click', clWrapper)
       renderer.dispose()
@@ -572,8 +700,9 @@ export default function ThreeViewer() {
     setSelectedStatus(null)
     setTooltip({ visible:false, name:'', x:0, y:0 })
 
-    /* Limpiar labels del overlay antes de destruir los meshes */
+    /* Limpiar labels y ruta antes de destruir los meshes */
     cleanupLabels()
+    cleanupPath()
 
     scene.children.slice().forEach(child => {
       if (child.isLight) return
@@ -602,11 +731,14 @@ export default function ThreeViewer() {
         /* Limpiar meshes por seguridad (doble protección) */
         meshes.current = []
 
+        const nameMap = ROOM_NAMES[activeModel] || {}
         let n = 0
         model.traverse(node => {
           if (!node.isMesh) return
           n++
-          node.name          = node.name?.trim() || `Parte ${n}`
+          const origName     = node.name?.trim() || `Parte ${n}`
+          const prefix       = activeModel === 0 ? 'PB' : `P${activeModel}`
+          node.name          = nameMap[origName] ?? `${prefix}-${String(n).padStart(2, '0')}`
           node.castShadow    = true
           node.receiveShadow = true
           node.material = Array.isArray(node.material)
@@ -621,6 +753,7 @@ export default function ThreeViewer() {
             origScale:    node.scale.clone(),
             origColor:    getMeshColor(node).clone(),
             name:         node.name,
+            origName,
             _label:       null,
             _liftTimer:   null,
           })
@@ -680,7 +813,7 @@ export default function ThreeViewer() {
             mesh: entry.mesh, anchorOffset,
             el: div, lineEl: line, name: entry.name,
             w: 0, h: 0, cx: 0, cy: 0,
-            displayX: 0, displayY: 0,
+            displayX: 0, displayY: 0, initialized: false,
             anchorSX: 0, anchorSY: 0,
             onScreen: false, behind: false,
           }
@@ -827,7 +960,7 @@ export default function ThreeViewer() {
           </div>
         )}
 
-        {/* ── Badge pieza seleccionada ── */}
+        {/* ── Badge pieza seleccionada + botón ruta ── */}
         {selectedName && (
           <div className="selected-badge-wrap">
             <div className="selected-badge" style={{ '--badge-accent': STATUS_COLORS[selectedStatus] || '#94a3b8' }}>
@@ -835,6 +968,19 @@ export default function ThreeViewer() {
               <span className="selected-badge-name">{selectedName}</span>
               <span className="selected-badge-status">{selectedStatus?.replace('_', ' ') ?? ''}</span>
             </div>
+            <button onClick={handleShowPath}
+              className="flex items-center gap-1.5 mt-2 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all duration-200"
+              style={{
+                background: showingPath ? 'var(--color-primary)' : 'rgba(17,17,17,0.75)',
+                color: '#fff',
+                border: showingPath ? '1px solid var(--color-primary)' : '1px solid rgba(255,255,255,0.18)',
+                backdropFilter: 'blur(6px)',
+                cursor: 'pointer',
+                pointerEvents: 'auto',
+              }}>
+              <Route size={12} />
+              {showingPath ? 'Ocultar ruta' : 'Cómo llegar'}
+            </button>
           </div>
         )}
 
