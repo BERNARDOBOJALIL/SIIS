@@ -4,29 +4,14 @@ import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
-  Search, X, Layers, Building2, RotateCcw, Info, Route,
+  Search, X, Layers, Building2, RotateCcw, Info, Navigation2, XCircle,
 } from 'lucide-react'
+import { buildNavGraph, findPath } from './navPathfinding'
 
 const MODELS = [
-  { file: '/Ensamblaje2_PB.glb', label: 'Planta Baja', short: 'PB' },
-  { file: '/P1_ENSAMB_v2.glb',   label: 'Planta 1',    short: 'P1' },
+  { file: '/Ensamblaje2_PB.glb', nav: '/NAVMESH_PB_IDIT.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
+  { file: '/P1_ENSAMB_v2.glb',   nav: '/NAVMESH_P1_IDIT.glb', label: 'Planta 1',    short: 'P1', entryName: 'Sólido27-1', origin: [14.63, -4.60, 36.42] },
 ]
-
-/* ── Pieza-entrada por piso (nombre ORIGINAL del GLB) ── */
-const ENTRANCE_MESH = ['Solido 44-2', 'Solido 27-1']
-
-/* ── Mapeo de nombres: nombreOrigGLB → nombreMostrado.
-     Los que no aparezcan se auto-numeran PB-01, P1-01… ── */
-const ROOM_NAMES = [
-  { /* Planta Baja */
-    'Solido 44-2': 'Entrada Principal',
-  },
-  { /* Planta 1 */
-    'Solido 27-1': 'Entrada P1',
-  },
-]
-
-const NUM_PATH_DOTS = 5
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
 const C_SELECTED = new THREE.Color(0xcc0000)
@@ -138,7 +123,6 @@ export default function ThreeViewer() {
   const handlersRef = useRef({ onPointerMove: null, onClick: null })
   const idleTimerRef = useRef(null)   // timeout de inactividad 30s
   const labelsDataRef = useRef([])
-  const pathRef = useRef({ tube: null, dots: null, curve: null, dotGeo: null })
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -147,7 +131,21 @@ export default function ThreeViewer() {
   const [search,        setSearch]        = useState('')
   const [selectedName,  setSelectedName]  = useState(null)
   const [selectedStatus, setSelectedStatus] = useState(null)
-  const [showingPath,   setShowingPath]   = useState(false)
+
+  /* ── Navigation state ── */
+  const navGraphRef  = useRef(null)      // built nav graph
+  const navLineRef   = useRef(null)      // THREE.Mesh for route tube
+  const navDotRef    = useRef(null)      // animated dot group
+  const navAnimRef   = useRef({ active: false, t: 0, pathLen: 0, points: [] })
+  const navDebugRef  = useRef(null)      // debug wireframe mesh
+  const navMarkersRef = useRef([])       // origin/dest marker meshes
+  const navOriginPt  = useRef(null)      // THREE.Vector3 — clicked origin (building space)
+  const navDestPt    = useRef(null)      // THREE.Vector3 — clicked dest (building space)
+  const navOffsetRef = useRef(new THREE.Vector3()) // navCen - buildingCen
+  const [navMode,      setNavMode]      = useState(false)   // navigation panel open
+  const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
+  const [navDest,      setNavDest]       = useState(null)    // display label for dest
+  const [navActive,    setNavActive]     = useState(false)   // route displayed
 
   /* ── Limpia todas las etiquetas del overlay ── */
   function cleanupLabels() {
@@ -238,7 +236,6 @@ export default function ThreeViewer() {
     setSelectedName(null)
     setSelectedStatus(null)
     setLabelsVisible(true)
-    cleanupPath()
   }
 
   function resetView() {
@@ -264,83 +261,227 @@ export default function ThreeViewer() {
     idleTimerRef.current = null
   }
 
-  /* ── Ruta animada: tubo + esferas que fluyen ── */
-  function createPath(fromWP, toWP) {
-    const { scene } = R.current
-    cleanupPath()
-    const groundY = Math.min(fromWP.y, toWP.y) + 0.12
-    const from = new THREE.Vector3(fromWP.x, groundY, fromWP.z)
-    const to   = new THREE.Vector3(toWP.x,   groundY, toWP.z)
-    const dist = from.distanceTo(to)
-    const mid  = from.clone().lerp(to, 0.5)
-    mid.y += Math.max(dist * 0.04, 0.3)
-    const curve = new THREE.CatmullRomCurve3([from, mid, to])
-    const segs  = Math.max(32, Math.round(dist * 4))
-    const tubeGeo = new THREE.TubeGeometry(curve, segs, 0.10, 8, false)
-    const tubeMat = new THREE.MeshStandardMaterial({
-      color: 0xff3b3b, emissive: 0xff2200, emissiveIntensity: 0.6,
-      transparent: true, opacity: 0.45, depthWrite: false,
-    })
-    const tube = new THREE.Mesh(tubeGeo, tubeMat)
-    scene.add(tube)
-    const dotGeo = new THREE.SphereGeometry(0.22, 12, 12)
-    const dots = []
-    for (let i = 0; i < NUM_PATH_DOTS; i++) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0xffdd00, emissive: 0xffaa00, emissiveIntensity: 1.2,
-        transparent: true, opacity: 1,
-      })
-      const dot = new THREE.Mesh(dotGeo, mat)
-      scene.add(dot)
-      dots.push(dot)
-    }
-    pathRef.current = { tube, dots, curve, dotGeo }
-  }
-
-  function cleanupPath() {
-    const p = pathRef.current
-    if (p.tube) {
-      R.current.scene?.remove(p.tube)
-      p.tube.geometry.dispose()
-      p.tube.material.dispose()
-    }
-    if (p.dots) {
-      p.dots.forEach(d => { R.current.scene?.remove(d); d.material.dispose() })
-    }
-    if (p.dotGeo) p.dotGeo.dispose()
-    pathRef.current = { tube: null, dots: null, curve: null, dotGeo: null }
-    setShowingPath(false)
-  }
-
-  function handleShowPath() {
-    if (pathRef.current.curve) { cleanupPath(); return }
-    const sel = selectedRef.current
-    if (!sel) return
-    const entName = ENTRANCE_MESH[activeModel]
-    const entrance = meshes.current.find(e =>
-      e.origName === entName || e.origName.toLowerCase() === entName.toLowerCase()
-    )
-    if (!entrance) {
-      console.warn('[SIIS] Entrada no encontrada:', entName,
-        'Meshes disponibles:', meshes.current.map(e => e.origName))
-      return
-    }
-    if (entrance === sel) return // ya estás en la entrada
-    createPath(entrance.origWorldPos, sel.origWorldPos)
-    setShowingPath(true)
-    const { camera } = R.current
-    const pathBox = new THREE.Box3()
-    pathBox.expandByPoint(entrance.origWorldPos)
-    pathBox.expandByPoint(sel.origWorldPos)
-    pathBox.expandByScalar(5)
-    const { pos, target } = fitCamera(pathBox, camera, 55, 1.3)
-    startCamAnim(pos, target)
-  }
-
   function switchModel(idx) {
     if (idx === activeModel || transitioning) return
     setSearch('')
+    exitNavigation()
     setActiveModel(idx)
+  }
+
+  /* ── Navigation helpers ── */
+  function clearRouteVisuals() {
+    const scene = R.current.scene
+    if (navLineRef.current) {
+      navLineRef.current.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+      scene?.remove(navLineRef.current)
+      navLineRef.current = null
+    }
+    if (navDotRef.current) {
+      navDotRef.current.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+      scene?.remove(navDotRef.current)
+      navDotRef.current = null
+    }
+    navAnimRef.current = { active: false, t: 0, pathLen: 0, points: [] }
+  }
+
+  function clearNavMarkers() {
+    const scene = R.current.scene
+    navMarkersRef.current.forEach(m => {
+      m.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+      scene?.remove(m)
+    })
+    navMarkersRef.current = []
+  }
+
+  function addNavMarker(point, color, label) {
+    const scene = R.current.scene
+    /* Pin: sphere + cylinder pole */
+    const group = new THREE.Group()
+    group.position.copy(point)
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 24, 16),
+      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }),
+    )
+    sphere.position.y = 2.8
+    sphere.renderOrder = 1001
+    group.add(sphere)
+    /* Glow ring */
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.7, 1.4, 32),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, depthTest: false, side: THREE.DoubleSide }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.y = 0.05
+    ring.renderOrder = 1000
+    group.add(ring)
+    /* Pole */
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 2.8, 8),
+      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.7 }),
+    )
+    pole.position.y = 1.4
+    pole.renderOrder = 1000
+    group.add(pole)
+    scene.add(group)
+    navMarkersRef.current.push(group)
+    console.log(`[Nav] ${label} marker placed at`, point.toArray().map(v => v.toFixed(3)))
+  }
+
+  function clearNavDebug() {
+    const scene = R.current.scene
+    if (navDebugRef.current) {
+      scene?.remove(navDebugRef.current)
+      navDebugRef.current.geometry?.dispose()
+      if (Array.isArray(navDebugRef.current.material))
+        navDebugRef.current.material.forEach(m => m.dispose())
+      else
+        navDebugRef.current.material?.dispose()
+      navDebugRef.current = null
+    }
+  }
+
+  function exitNavigation() {
+    clearRouteVisuals()
+    clearNavMarkers()
+    clearNavDebug()
+    navOriginPt.current = null
+    navDestPt.current = null
+    setNavMode(false)
+    setNavOrigin(null)
+    setNavDest(null)
+    setNavActive(false)
+    if (selectedRef.current) deselectEntry(selectedRef.current)
+  }
+
+  function buildRoute() {
+    const graph = navGraphRef.current
+    const from = navOriginPt.current
+    const to   = navDestPt.current
+    if (!graph || !from || !to) return
+
+    clearRouteVisuals()
+    if (selectedRef.current) deselectEntry(selectedRef.current)
+
+    /* No offset — click points go directly to pathfinding */
+    console.log('[Nav] Route from', from.toArray().map(v => v.toFixed(3)),
+                'to', to.toArray().map(v => v.toFixed(3)))
+    const waypoints = findPath(from.clone(), to.clone(), graph)
+    console.log('[Nav] Waypoints:', waypoints ? waypoints.length : 'null')
+    if (!waypoints || waypoints.length < 2) {
+      console.warn('[Nav] No route found!')
+      return
+    }
+
+    /* Place path at the building floor Y (where the user clicked)
+       instead of the nav-mesh Y which sits 4 units higher and
+       causes visible perspective shift ("desfase para arriba"). */
+    const floorY = Math.min(from.y, to.y) + 0.15
+    waypoints.forEach(p => { p.y = floorY })
+
+    /* Build smooth curve from waypoints */
+    const curve = new THREE.CatmullRomCurve3(waypoints, false, 'centripetal', 0.5)
+    const divisions = Math.max(waypoints.length * 20, 200)
+    const curvePoints = curve.getPoints(divisions)
+
+    /* ── Route group ── */
+    const routeGroup = new THREE.Group()
+    routeGroup.renderOrder = 999
+
+    /* ── Outer glow tube (wide, faint) ── */
+    const glowTubeGeo = new THREE.TubeGeometry(curve, divisions, 0.6, 12, false)
+    const glowTubeMat = new THREE.MeshBasicMaterial({
+      color: 0xff2200, transparent: true, opacity: 0.25,
+      depthTest: false, side: THREE.DoubleSide,
+    })
+    const glowTube = new THREE.Mesh(glowTubeGeo, glowTubeMat)
+    glowTube.renderOrder = 998
+    routeGroup.add(glowTube)
+
+    /* ── Core tube (bright, solid) ── */
+    const coreGeo = new THREE.TubeGeometry(curve, divisions, 0.2, 8, false)
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: 0xff0000, transparent: true, opacity: 0.95,
+      depthTest: false, side: THREE.DoubleSide,
+    })
+    const coreTube = new THREE.Mesh(coreGeo, coreMat)
+    coreTube.renderOrder = 999
+    routeGroup.add(coreTube)
+
+    /* ── Animated dashed line overlay ── */
+    const dashGeo = new THREE.BufferGeometry().setFromPoints(curvePoints)
+    const dashMat = new THREE.LineDashedMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.7,
+      dashSize: 1.2, gapSize: 0.8, depthTest: false,
+    })
+    const dashLine = new THREE.Line(dashGeo, dashMat)
+    dashLine.computeLineDistances()
+    dashLine.renderOrder = 1000
+    routeGroup.add(dashLine)
+
+    R.current.scene.add(routeGroup)
+    navLineRef.current = routeGroup
+
+    /* ── Animated arrow dot (cone + sphere + glow) ── */
+    const dotGroup = new THREE.Group()
+    /* Inner bright sphere */
+    const innerSphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 20, 14),
+      new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }),
+    )
+    innerSphere.renderOrder = 1002
+    dotGroup.add(innerSphere)
+    /* Arrow cone (direction indicator) */
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.38, 1.0, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }),
+    )
+    cone.rotation.x = Math.PI / 2  // point forward along Z by default
+    cone.position.z = 0.75
+    cone.renderOrder = 1002
+    dotGroup.add(cone)
+    /* Outer glow sphere */
+    const outerGlow = new THREE.Mesh(
+      new THREE.SphereGeometry(1.3, 20, 14),
+      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.3, depthTest: false }),
+    )
+    outerGlow.renderOrder = 1001
+    dotGroup.add(outerGlow)
+    dotGroup.position.copy(curvePoints[0])
+    R.current.scene.add(dotGroup)
+    navDotRef.current = dotGroup
+
+    /* Store anim data */
+    navAnimRef.current = {
+      active: true, t: 0,
+      pathLen: curve.getLength(),
+      curve, dashMat,
+      points: curvePoints,
+    }
+
+    /* Frame camera to show route */
+    const routeBB = new THREE.Box3()
+    curvePoints.forEach(p => routeBB.expandByPoint(p))
+    routeBB.expandByScalar(3)
+    const { pos, target } = fitCamera(routeBB, R.current.camera, 55, 1.25)
+    startCamAnim(pos, target)
+    setLabelsVisible(true)
+    setNavActive(true)
+  }
+
+  function enterNavMode() {
+    if (selectedRef.current) deselectEntry(selectedRef.current)
+    navDestPt.current = null
+    setNavDest(null)
+    setNavActive(false)
+    clearRouteVisuals()
+    clearNavMarkers()
+    /* Fixed origin per floor */
+    const o = MODELS[activeModel].origin
+    const originPt = new THREE.Vector3(o[0], o[1], o[2])
+    navOriginPt.current = originPt
+    setNavOrigin('Entrada')
+    addNavMarker(originPt, 0x22cc44, 'Origin')
+    setNavMode(true)
   }
 
   handlersRef.current.onPointerMove = function(e) {
@@ -376,6 +517,35 @@ export default function ThreeViewer() {
     if (!camera || !renderer || meshes.current.length === 0) return
     const { nx, ny } = toNDC(e, renderer.domElement)
     const hits = doRaycast(nx, ny, camera, meshes.current.map(m => m.mesh))
+
+    /* ── Navigation mode: click places origin / dest ── */
+    if (navMode) {
+      if (hits.length === 0) return
+      const entry = meshes.current.find(m => m.mesh === hits[0].object)
+      const label = entry ? entry.name : 'punto'
+      /* Use the building surface hit directly — the nav graph XZ
+         matches building-centered XZ within ~2% (both independently
+         centered).  The building hit Y is what we need so the route
+         renders ON the floor, not 4 units above it (the old bug). */
+      const pt = hits[0].point.clone()
+      pt.z += 20.0  // offset down — nav mesh Y sits ~4 units above building floor after centering
+      console.log('[Nav] Click:', label, 'pt:', pt.toArray().map(v => v.toFixed(2)))
+
+      /* Origin is always fixed (set in enterNavMode), click only sets dest */
+      navDestPt.current = pt
+      setNavDest(label)
+      clearRouteVisuals()
+      /* Keep only origin marker, remove old dest marker */
+      while (navMarkersRef.current.length > 1) {
+        const old = navMarkersRef.current.pop()
+        old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+        R.current.scene?.remove(old)
+      }
+      addNavMarker(pt, 0xff3333, 'Dest')
+      buildRoute()
+      return
+    }
+
     const prev = selectedRef.current
     if (hits.length === 0) {
       /*
@@ -427,7 +597,7 @@ export default function ThreeViewer() {
     renderer.shadowMap.enabled   = true
     renderer.shadowMap.type      = THREE.PCFShadowMap
     renderer.toneMapping         = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.1
+    renderer.toneMappingExposure = 1.35
     renderer.setSize(mount.clientWidth || 1, mount.clientHeight || 1)
     mount.appendChild(renderer.domElement)
     r.renderer = renderer
@@ -436,8 +606,8 @@ export default function ThreeViewer() {
     r.timer = timer
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xeeeeee)
-    scene.fog = new THREE.FogExp2(0xeeeeee, 0.007)
+    scene.background = new THREE.Color(0xd5d5d5)
+    scene.fog = new THREE.FogExp2(0xd5d5d5, 0.003)
     r.scene = scene
 
     const camera = new THREE.PerspectiveCamera(42, (mount.clientWidth||1)/(mount.clientHeight||1), 0.1, 800)
@@ -463,8 +633,8 @@ export default function ThreeViewer() {
     r.labelsSvg = labelsSvg
 
     /* ── Iluminación perpendicular ── */
-    scene.add(new THREE.AmbientLight(0xffffff, 1.0))
-    const sun = new THREE.DirectionalLight(0xffffff, 2.8)
+    scene.add(new THREE.AmbientLight(0xffffff, 1.4))
+    const sun = new THREE.DirectionalLight(0xffffff, 3.2)
     sun.position.set(0, 50, 0)
     sun.castShadow = true
     sun.shadow.mapSize.setScalar(2048)
@@ -633,18 +803,41 @@ export default function ThreeViewer() {
       }
     }
 
-    function tickPath() {
-      const p = pathRef.current
-      if (!p.curve || !p.dots) return
-      const now = performance.now() * 0.001
-      for (let i = 0; i < p.dots.length; i++) {
-        const t = ((now * 0.3) + i / p.dots.length) % 1
-        p.dots[i].position.copy(p.curve.getPointAt(t))
-        const fade = Math.sin(t * Math.PI)
-        p.dots[i].material.opacity = 0.3 + fade * 0.7
-        p.dots[i].scale.setScalar(0.7 + fade * 0.5)
+    /* ── Nav dot animation ── */
+    const _fwd = new THREE.Vector3()
+    function tickNavAnim(dt) {
+      const a = navAnimRef.current
+      if (!a.active || !navDotRef.current) return
+      const speed = 6  // world units per second
+      a.t += (dt * speed) / (a.pathLen || 1)
+      if (a.t > 1) a.t -= 1   // loop
+
+      /* Position */
+      const pt = a.curve.getPoint(a.t)
+      navDotRef.current.position.copy(pt)
+
+      /* Orient arrow in direction of travel */
+      const lookT = Math.min(a.t + 0.01, 1)
+      const ahead = a.curve.getPoint(lookT)
+      _fwd.subVectors(ahead, pt)
+      if (_fwd.lengthSq() > 0.0001) {
+        navDotRef.current.lookAt(ahead)
       }
-      if (p.tube) p.tube.material.opacity = 0.35 + Math.sin(now * 3.5) * 0.12
+
+      /* Scale pulse */
+      const pulse = 1 + 0.3 * Math.sin(a.t * Math.PI * 30)
+      navDotRef.current.scale.setScalar(pulse)
+
+      /* Outer glow breath */
+      const glow = navDotRef.current.children[2] // outerGlow
+      if (glow && glow.material) {
+        glow.material.opacity = 0.12 + 0.22 * Math.abs(Math.sin(a.t * Math.PI * 18))
+      }
+
+      /* Animate dash offset for scrolling dashes */
+      if (a.dashMat) {
+        a.dashMat.dashOffset -= dt * 8
+      }
     }
 
     function loop() {
@@ -653,7 +846,7 @@ export default function ThreeViewer() {
       const dt = timer.getDelta()
       tickMeshAnims(dt)
       tickCamAnim(dt)
-      tickPath()
+      tickNavAnim(dt)
       if (!camAnim.current.active) controls.update()
       else controls.target.copy(controls.target) // keep internal state in sync
       renderer.render(scene, camera)
@@ -671,7 +864,6 @@ export default function ThreeViewer() {
       cancelAnimationFrame(r.raf)
       clearTimeout(idleTimerRef.current)
       cleanupLabels()
-      cleanupPath()
       renderer.domElement.removeEventListener('pointermove', pmWrapper)
       renderer.domElement.removeEventListener('click', clWrapper)
       renderer.dispose()
@@ -700,9 +892,8 @@ export default function ThreeViewer() {
     setSelectedStatus(null)
     setTooltip({ visible:false, name:'', x:0, y:0 })
 
-    /* Limpiar labels y ruta antes de destruir los meshes */
+    /* Limpiar labels del overlay antes de destruir los meshes */
     cleanupLabels()
-    cleanupPath()
 
     scene.children.slice().forEach(child => {
       if (child.isLight) return
@@ -714,6 +905,10 @@ export default function ThreeViewer() {
     hoverRef.current    = null
     selectedRef.current = null
     camAnim.current.active = false
+    navGraphRef.current = null
+    clearRouteVisuals()
+    clearNavMarkers()
+    clearNavDebug()
 
     new GLTFLoader().load(
       MODELS[activeModel].file,
@@ -731,14 +926,11 @@ export default function ThreeViewer() {
         /* Limpiar meshes por seguridad (doble protección) */
         meshes.current = []
 
-        const nameMap = ROOM_NAMES[activeModel] || {}
         let n = 0
         model.traverse(node => {
           if (!node.isMesh) return
           n++
-          const origName     = node.name?.trim() || `Parte ${n}`
-          const prefix       = activeModel === 0 ? 'PB' : `P${activeModel}`
-          node.name          = nameMap[origName] ?? `${prefix}-${String(n).padStart(2, '0')}`
+          node.name          = node.name?.trim() || `Parte ${n}`
           node.castShadow    = true
           node.receiveShadow = true
           node.material = Array.isArray(node.material)
@@ -753,7 +945,6 @@ export default function ThreeViewer() {
             origScale:    node.scale.clone(),
             origColor:    getMeshColor(node).clone(),
             name:         node.name,
-            origName,
             _label:       null,
             _liftTimer:   null,
           })
@@ -780,7 +971,7 @@ export default function ThreeViewer() {
           const sColor = STATUS_COLORS[status]
 
           /* Tinte del material con el color de estado */
-          const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.30)
+          const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.45)
           setMeshColor(entry.mesh, tinted)
           entry.origColor = tinted.clone()
 
@@ -841,6 +1032,39 @@ export default function ThreeViewer() {
         setLoading(false)
         setTransitioning(false)
         setLabelsVisible(true)
+
+        /* ── Load nav mesh for pathfinding ── */
+        const navFile = MODELS[activeModel].nav
+        if (navFile) {
+          new GLTFLoader().load(navFile, navGltf => {
+            if (stale) return
+            const navScene = navGltf.scene
+            /* Center nav mesh by ITS OWN bbox center so the wireframe
+               visually aligns with the independently-centered building.
+               We raycast directly against this mesh for nav coordinates,
+               so no coordinate conversion offset is needed. */
+            const navBox = new THREE.Box3().setFromObject(navScene)
+            const navCen = navBox.getCenter(new THREE.Vector3())
+            navScene.position.sub(navCen)
+            navScene.updateMatrixWorld(true)
+            console.log('[Nav] Nav mesh centered by own center:', navCen.toArray().map(v=>v.toFixed(3)))
+            let navGeo = null
+            let navMatrix = new THREE.Matrix4()
+            navScene.traverse(n => {
+              if (n.isMesh && !navGeo) {
+                navGeo = n.geometry
+                navMatrix = n.matrixWorld.clone()
+              }
+            })
+            if (navGeo) {
+              const graph = buildNavGraph(navGeo, navMatrix)
+              navGraphRef.current = graph
+              console.log('[Nav] Graph built:', graph.triCount, 'tris,', graph.centroids.length, 'centroids')
+              /* Wireframe removed — route is placed at building-surface Y
+                 using building-click coords directly (XZ ≈ nav XZ). */
+            }
+          })
+        }
       },
       undefined,
       err => {
@@ -853,6 +1077,8 @@ export default function ThreeViewer() {
 
     return () => { stale = true }
   }, [activeModel]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Route is now built directly in onClick handler, no effect needed */
 
   useEffect(() => {
     if (meshes.current.length === 0) return
@@ -922,6 +1148,18 @@ export default function ThreeViewer() {
           <span className="btn-label">Resetear</span>
         </button>
 
+        <button onClick={navMode ? exitNavigation : enterNavMode} title={navMode ? 'Salir navegación' : 'Navegar'}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-all duration-150 shrink-0"
+          style={{
+            background: navMode ? 'var(--color-primary)' : 'var(--color-bg)',
+            color:      navMode ? '#fff' : 'var(--color-text-muted)',
+            border:     `1px solid ${navMode ? 'var(--color-primary)' : 'var(--color-border)'}`,
+          }}>
+          <Navigation2 size={12} />
+          <span className="btn-label">{navMode ? 'Salir' : 'Navegar'}</span>
+          <span className="btn-short">Nav</span>
+        </button>
+
         <div className="ml-auto shrink-0">
           {!selectedName && (
             <div className="flex items-center gap-1.5 text-[12px]"
@@ -960,31 +1198,66 @@ export default function ThreeViewer() {
           </div>
         )}
 
-        {/* ── Badge pieza seleccionada + botón ruta ── */}
-        {selectedName && (
+        {/* ── Badge pieza seleccionada ── */}
+        {selectedName && !navMode && (
           <div className="selected-badge-wrap">
             <div className="selected-badge" style={{ '--badge-accent': STATUS_COLORS[selectedStatus] || '#94a3b8' }}>
               <span className="selected-badge-dot" />
               <span className="selected-badge-name">{selectedName}</span>
               <span className="selected-badge-status">{selectedStatus?.replace('_', ' ') ?? ''}</span>
             </div>
-            <button onClick={handleShowPath}
-              className="flex items-center gap-1.5 mt-2 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all duration-200"
-              style={{
-                background: showingPath ? 'var(--color-primary)' : 'rgba(17,17,17,0.75)',
-                color: '#fff',
-                border: showingPath ? '1px solid var(--color-primary)' : '1px solid rgba(255,255,255,0.18)',
-                backdropFilter: 'blur(6px)',
-                cursor: 'pointer',
-                pointerEvents: 'auto',
-              }}>
-              <Route size={12} />
-              {showingPath ? 'Ocultar ruta' : 'Cómo llegar'}
-            </button>
           </div>
         )}
 
-        {!selectedName && (
+        {/* ── Navigation panel overlay ── */}
+        {navMode && (
+          <div className="nav-panel">
+            <div className="nav-panel-header">
+              <Navigation2 size={14} />
+              <span>Navegación</span>
+              <button onClick={exitNavigation} className="nav-close-btn" title="Salir">
+                <XCircle size={18} />
+              </button>
+            </div>
+            <div className="nav-panel-body">
+              <div className="nav-field">
+                <span className="nav-field-label">Origen {navOrigin ? '✓' : '← clic'}</span>
+                <span className="nav-field-value">{navOrigin || 'Haz clic para colocar origen'}</span>
+              </div>
+              <div className="nav-field">
+                <span className="nav-field-label">Destino {navDest ? '✓' : navOrigin ? '← clic' : ''}</span>
+                <span className="nav-field-value">{navDest || (navOrigin ? 'Ahora clic en el destino' : '—')}</span>
+              </div>
+              {navActive && (
+                <div className="nav-field nav-status">
+                  <span className="nav-dot-anim" />
+                  <span>Ruta encontrada</span>
+                </div>
+              )}
+              {(navOrigin || navDest) && (
+                <button onClick={() => {
+                  clearRouteVisuals()
+                  clearNavMarkers()
+                  navOriginPt.current = null
+                  navDestPt.current = null
+                  setNavOrigin(null)
+                  setNavDest(null)
+                  setNavActive(false)
+                }} className="nav-reset-btn">Reiniciar puntos</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Exit nav button (large, always visible when navigating) ── */}
+        {navActive && (
+          <button onClick={exitNavigation} className="nav-exit-fab">
+            <XCircle size={20} />
+            <span>Salir de navegación</span>
+          </button>
+        )}
+
+        {!selectedName && !navMode && (
           <div className="absolute bottom-3 left-3 pointer-events-none flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px]"
             style={{
               background:'rgba(255,255,255,0.80)', color:'var(--color-text-muted)',
