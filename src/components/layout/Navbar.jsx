@@ -36,7 +36,7 @@ export default function Navbar() {
 
         <Link to="/" className="flex items-center gap-2 select-none">
           <img
-            src="/logo_fblanco_tnegro.png"
+            src="/logo_fnegro_tblanco.png"
             alt="SIIS"
             className="h-8 w-auto"
           />

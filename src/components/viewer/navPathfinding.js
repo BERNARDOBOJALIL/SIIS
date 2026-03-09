@@ -120,9 +120,6 @@ export function buildNavGraph(geo, matrix) {
     }
   })
 
-  console.log(`[Nav] Graph: ${triCount} tris, ${nextCanon} unique verts (from ${rawCount}), ` +
-    `adj edges: ${sharedEdges.size}, isolated: ${adj.filter(a => a.length === 0).length}`)
-
   return { verts, tris, centroids, adj, sharedEdges, triCount }
 }
 
@@ -267,7 +264,7 @@ export function funnelPath(triPath, startPt, endPt, graph) {
   pts.push(apex.clone())
 
   for (let i = 1; i < portals.length; i++) {
-    if (++iters > MAX_ITERS) { console.warn('[Nav] Funnel loop limit'); break }
+    if (++iters > MAX_ITERS) { break }
     const newLeft  = portals[i].left
     const newRight = portals[i].right
 
@@ -329,23 +326,13 @@ export function funnelPath(triPath, startPt, endPt, graph) {
 export function findPath(from, to, graph) {
   const startTri = findTriangle(from, graph)
   const endTri   = findTriangle(to,   graph)
-  console.log('[Nav] findPath: startTri', startTri,
-    'centroid', graph.centroids[startTri]?.toArray().map(v=>v.toFixed(2)),
-    '| endTri', endTri,
-    'centroid', graph.centroids[endTri]?.toArray().map(v=>v.toFixed(2)))
   const triRoute = astar(startTri, endTri, graph)
-  console.log('[Nav] A* route:', triRoute ? triRoute.length + ' tris' : 'null')
   if (!triRoute) return null
 
-  /* Try funnel first */
   const funnel = funnelPath(triRoute, from, to, graph)
-  if (funnel && funnel.length >= 2) {
-    console.log('[Nav] Funnel path:', funnel.length, 'waypoints')
-    return funnel
-  }
+  if (funnel && funnel.length >= 2) return funnel
 
   /* Fallback: use triangle centroids as path */
-  console.log('[Nav] Funnel failed, using centroid fallback')
   const pts = [from.clone()]
   for (const t of triRoute) pts.push(graph.centroids[t].clone())
   pts.push(to.clone())

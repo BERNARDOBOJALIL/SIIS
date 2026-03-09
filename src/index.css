@@ -86,7 +86,14 @@ body {
   box-shadow: 0 3px 12px rgba(0,0,0,0.28);
   border-left: 3px solid var(--label-accent);
   user-select: none;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.room-label:hover {
+  background: rgba(30, 30, 30, 0.9);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4), 0 0 0 1px var(--label-accent);
+  transform: translate(-50%, -100%) scale(1.05);
 }
 .room-label .label-dot {
   width: 7px;
@@ -171,12 +178,13 @@ body {
   top: 12px;
   left: 12px;
   z-index: 30;
-  min-width: 220px;
-  background: rgba(10, 10, 10, 0.82);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-radius: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06);
+  min-width: 240px;
+  max-width: 280px;
+  background: rgba(10, 10, 10, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.07);
   overflow: hidden;
   animation: nav-panel-in 0.35s cubic-bezier(0.23, 1, 0.32, 1) both;
   pointer-events: auto;
@@ -198,31 +206,64 @@ body {
 }
 .nav-close-btn {
   margin-left: auto;
-  color: rgba(255,255,255,0.5);
-  background: none;
+  color: rgba(255,255,255,0.45);
+  background: rgba(255,255,255,0.06);
   border: none;
   cursor: pointer;
-  padding: 2px;
-  border-radius: 50%;
+  padding: 5px;
+  border-radius: 8px;
   transition: color 0.15s, background 0.15s;
   display: flex;
 }
 .nav-close-btn:hover {
   color: #fff;
-  background: rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.14);
 }
 .nav-panel-body {
-  padding: 10px 14px 14px;
+  padding: 12px 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
 }
-.nav-field {
+
+/* ── Origin / Dest rows ── */
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+.nav-row-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.nav-row-icon--origin {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+.nav-row-icon--dest {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.nav-row-icon--waiting {
+  animation: icon-pulse 2s ease-in-out infinite;
+}
+@keyframes icon-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+.nav-row-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  min-width: 0;
 }
-.nav-field-label {
+.nav-row-label {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 9px;
   font-weight: 700;
@@ -230,25 +271,41 @@ body {
   letter-spacing: 0.08em;
   color: rgba(255,255,255,0.4);
 }
-.nav-field-value {
+.nav-row-value {
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 200px;
 }
-.nav-status {
-  flex-direction: row;
+.nav-row-hint {
+  font-style: normal;
+  font-weight: 500;
+  color: rgba(255,255,255,0.35);
+  font-size: 11px;
+}
+.nav-row-divider {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  padding: 2px 0 2px 10px;
+  color: rgba(255,255,255,0.15);
+  align-self: flex-start;
+}
+
+/* ── Route status ── */
+.nav-route-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
   color: #22c55e;
-  padding-top: 4px;
+  padding: 10px 0 4px;
+  margin-top: 4px;
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 .nav-dot-anim {
@@ -260,22 +317,29 @@ body {
   animation: dot-pulse 1.6s ease-in-out infinite;
   flex-shrink: 0;
 }
-.nav-reset-btn {
-  margin-top: 4px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.75);
+
+/* ── Change destination button ── */
+.nav-change-dest-btn {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.8);
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.nav-reset-btn:hover {
-  background: rgba(255,255,255,0.15);
-  color: #fff;
+.nav-change-dest-btn:hover {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
 }
 
 /* Big floating exit button */
