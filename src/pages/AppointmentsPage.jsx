@@ -1,7 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context'
-import { Spinner, Button, Input } from '../components/common'
-import { Clock, User, CheckCircle, AlertCircle } from 'lucide-react'
+import { Spinner, Button, Modal } from '../components/common'
+import { User, CheckCircle, AlertCircle, LayoutDashboard, CalendarPlus, Search, ArrowLeft, CalendarClock, Timer, MessageSquareText } from 'lucide-react'
+import WeeklyAppointmentsCalendar from '../components/appointments/WeeklyAppointmentsCalendar'
+import PendingCitasSection from '../components/appointments/PendingCitasSection'
+import StudentSlotsCalendar from '../components/appointments/StudentSlotsCalendar'
+import StudentDashboard from './StudentDashboard'
+import {
+  DAYS,
+  TIME_BLOCKS,
+  START_MINUTES,
+  BLOCK_MINUTES,
+  getEmptyHorarios,
+  toDateValue,
+  isSameWeekday,
+  buildDateForCell,
+  dateToBlockIndex,
+  dayRangesToSet,
+  setToDayRanges,
+  getRangeBounds,
+  startOfWeek,
+} from '../components/appointments/calendarUtils'
 import {
   getAcademicos,
   getAcademicoSlots,
@@ -9,10 +28,18 @@ import {
   getPendingCitasForAcademico,
   acceptCita,
   rejectCita,
+  getHorariosBase,
+  saveHorariosBase,
+  ensureWeeklySlotsGenerated,
+  getAcademicoWeekSlots,
+  createOneTimeSlot,
+  deleteWeekSlot,
+  getAcademicoWeekCitas,
 } from '../services/firestoreService'
 
 export default function AppointmentsPage() {
   const { userData, userRole, authLoading } = useAuth()
+  const isStudentDashboard = userRole === 'ESTUDIANTE'
 
   if (authLoading) {
     return (
@@ -24,14 +51,18 @@ export default function AppointmentsPage() {
 
   return (
     <section className="h-full overflow-auto p-6">
-      <div className="max-w-5xl">
-        <h1 className="text-2xl font-semibold text-gray-900">Citas</h1>
-        <p className="mt-1 text-sm text-gray-600">
+      <div className={isStudentDashboard ? 'w-full' : 'max-w-5xl'}>
+        <h1 className="text-2xl font-semibold text-site-text">Citas</h1>
+        <p className="mt-1 text-sm text-site-muted">
           {userData?.nombre || 'Usuario'} • <span className="font-medium">{userRole || 'Sin rol'}</span>
         </p>
 
         {userRole === 'ESTUDIANTE' && userData?.uid && (
-          <StudentAppointmentsView estudianteId={userData.uid} />
+          <StudentWorkspace
+            estudianteId={userData.uid}
+            studentName={userData?.nombre}
+            studentEmail={userData?.email}
+          />
         )}
 
         {userRole === 'ACADEMICO' && userData?.uid && (
@@ -48,18 +79,57 @@ export default function AppointmentsPage() {
   )
 }
 
+function StudentWorkspace({ estudianteId, studentName, studentEmail }) {
+  const [view, setView] = useState('dashboard') // 'dashboard' | 'book'
+
+  return (
+    <div className="mt-6 space-y-4">
+      <div className="bg-site-surface border border-site-border rounded-xl p-2 flex flex-wrap items-center gap-2">
+        <Button
+          variant={view === 'dashboard' ? 'primary' : 'secondary'}
+          onClick={() => setView('dashboard')}
+          className="inline-flex items-center gap-2"
+        >
+          <LayoutDashboard size={16} /> Mi dashboard
+        </Button>
+        <Button
+          variant={view === 'book' ? 'primary' : 'secondary'}
+          onClick={() => setView('book')}
+          className="inline-flex items-center gap-2"
+        >
+          <CalendarPlus size={16} /> Agendar nueva cita
+        </Button>
+      </div>
+
+      {view === 'dashboard' ? (
+        <StudentDashboard
+          estudianteId={estudianteId}
+          studentName={studentName}
+          studentEmail={studentEmail}
+        />
+      ) : (
+        <StudentAppointmentsView estudianteId={estudianteId} />
+      )}
+    </div>
+  )
+}
+
 function StudentAppointmentsView({ estudianteId }) {
-  const [step, setStep] = useState('list') // 'list' | 'slots' | 'confirm'
+  const [step, setStep] = useState('list') // 'list' | 'calendar'
   const [academicos, setAcademicos] = useState([])
   const [selectedAcademico, setSelectedAcademico] = useState(null)
   const [slots, setSlots] = useState([])
+  const [weekCitas, setWeekCitas] = useState([])
   const [selectedSlot, setSelectedSlot] = useState(null)
+  const [isBookingOpen, setIsBookingOpen] = useState(false)
   const [proposedDateTime, setProposedDateTime] = useState('')
   const [proposedDuration, setProposedDuration] = useState(30)
   const [motivo, setMotivo] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [weekStart] = useState(() => startOfWeek(new Date()))
+  const [academicoSearch, setAcademicoSearch] = useState('')
 
   useEffect(() => {
     loadAcademicos()
@@ -77,16 +147,25 @@ function StudentAppointmentsView({ estudianteId }) {
     }
   }
 
+  const refreshCalendarData = async (academicoId) => {
+    const [slotsData, citasData] = await Promise.all([
+      getAcademicoSlots(academicoId),
+      getAcademicoWeekCitas(academicoId, weekStart),
+    ])
+
+    setSlots(slotsData)
+    setWeekCitas(citasData)
+  }
+
   const handleSelectAcademico = async (academico) => {
     setLoading(true)
     setError('')
     try {
       setSelectedAcademico(academico)
-      const slotsData = await getAcademicoSlots(academico.uid)
-      setSlots(slotsData)
-      setStep('slots')
+      await refreshCalendarData(academico.uid)
+      setStep('calendar')
     } catch (err) {
-      setError('Error al cargar slots')
+      setError('Error al cargar calendario de disponibilidad')
     } finally {
       setLoading(false)
     }
@@ -95,13 +174,17 @@ function StudentAppointmentsView({ estudianteId }) {
   const handleSelectSlot = (slot) => {
     setSelectedSlot(slot)
     const inicioDate = toDate(slot.inicio)
-    const finDate = toDate(slot.fin)
 
     setProposedDateTime(inicioDate ? toLocalInputValue(inicioDate) : '')
-    setProposedDuration(getDefaultDuration(inicioDate, finDate))
+    setProposedDuration(getDefaultDuration(inicioDate, toDate(slot.fin)))
     setMotivo('')
     setError('')
-    setStep('confirm')
+    setIsBookingOpen(true)
+  }
+
+  const closeBookingModal = () => {
+    setIsBookingOpen(false)
+    setSelectedSlot(null)
   }
 
   const handleCreateCita = async (event) => {
@@ -145,12 +228,11 @@ function StudentAppointmentsView({ estudianteId }) {
       })
 
       setSuccess('Cita solicitada exitosamente')
-      setStep('list')
-      setSelectedAcademico(null)
-      setSelectedSlot(null)
+      closeBookingModal()
       setProposedDateTime('')
       setProposedDuration(30)
       setMotivo('')
+      await refreshCalendarData(selectedAcademico.uid)
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
       setError(err.message || 'Error al crear cita')
@@ -205,7 +287,6 @@ function StudentAppointmentsView({ estudianteId }) {
 
     const datePart = new Intl.DateTimeFormat('es-ES', {
       weekday: 'long',
-      year: 'numeric',
       month: 'long',
       day: 'numeric',
     }).format(start)
@@ -220,8 +301,107 @@ function StudentAppointmentsView({ estudianteId }) {
       minute: '2-digit',
     }).format(end)
 
-    return `${datePart} · ${startTime} - ${endTime}`
+    return `${datePart}, ${startTime} - ${endTime}`
   }
+
+  const filteredAcademicos = useMemo(() => {
+    const search = academicoSearch.trim().toLowerCase()
+    if (!search) return academicos
+
+    return academicos.filter((academico) => {
+      const name = academico.nombre?.toLowerCase() || ''
+      const email = academico.email?.toLowerCase() || ''
+      return name.includes(search) || email.includes(search)
+    })
+  }, [academicos, academicoSearch])
+
+  const weekSlots = useMemo(() => {
+    const weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekStart.getDate() + 7)
+
+    return slots.filter((slot) => {
+      const start = toDate(slot.inicio)
+      if (!start) return false
+      const day = start.getDay()
+      const isMonToSat = day >= 1 && day <= 6
+      return isMonToSat && start >= weekStart && start < weekEnd
+    })
+  }, [slots, weekStart])
+
+  const calendarCellMap = useMemo(() => {
+    const map = new Map()
+
+    weekSlots.forEach((slot) => {
+      const start = toDate(slot.inicio)
+      const end = toDate(slot.fin)
+      if (!start || !end || end <= start) return
+
+      const dayIndex = start.getDay() === 0 ? 6 : start.getDay() - 1
+      if (dayIndex < 0 || dayIndex >= DAYS.length) return
+
+      const startIdx = Math.max(0, dateToBlockIndex(start))
+      const endIdx = Math.min(
+        TIME_BLOCKS.length,
+        Math.ceil((((end.getHours() * 60) + end.getMinutes()) - START_MINUTES) / BLOCK_MINUTES),
+      )
+
+      for (let idx = startIdx; idx < endIdx; idx += 1) {
+        const key = `${dayIndex}-${idx}`
+        const current = map.get(key) || { slotIds: new Set(), hasCita: false, slotForClick: null }
+        current.slotIds.add(slot.slotId)
+        current.slotForClick = current.slotForClick || slot
+        map.set(key, current)
+      }
+    })
+
+    weekCitas
+      .filter(cita => cita.estado === 'PENDIENTE' || cita.estado === 'CONFIRMADA')
+      .forEach((cita) => {
+        const start = toDate(cita.fechaHora)
+        const end = toDate(cita.fechaFin) || (start ? new Date(start.getTime() + (Number(cita.duracion) || 30) * 60000) : null)
+        if (!start || !end || end <= start) return
+
+        const dayIndex = start.getDay() === 0 ? 6 : start.getDay() - 1
+        if (dayIndex < 0 || dayIndex >= DAYS.length) return
+
+        const startIdx = Math.max(0, dateToBlockIndex(start))
+        const endIdx = Math.min(
+          TIME_BLOCKS.length,
+          Math.ceil((((end.getHours() * 60) + end.getMinutes()) - START_MINUTES) / BLOCK_MINUTES),
+        )
+
+        for (let idx = startIdx; idx < endIdx; idx += 1) {
+          const key = `${dayIndex}-${idx}`
+          const current = map.get(key)
+          if (current?.slotIds?.size) {
+            current.hasCita = true
+            map.set(key, current)
+          }
+        }
+      })
+
+    return map
+  }, [weekSlots, weekCitas])
+
+  const selectedSlotStart = toDate(selectedSlot?.inicio)
+  const selectedSlotEnd = toDate(selectedSlot?.fin)
+  const proposedStart = parseLocalDateTime(proposedDateTime)
+  const durationMinutes = Number(proposedDuration)
+  const proposedEnd = proposedStart && Number.isFinite(durationMinutes)
+    ? new Date(proposedStart.getTime() + durationMinutes * 60000)
+    : null
+
+  const isBookingFormValid = Boolean(
+    selectedSlotStart
+    && selectedSlotEnd
+    && proposedStart
+    && Number.isFinite(durationMinutes)
+    && durationMinutes > 0
+    && proposedStart >= selectedSlotStart
+    && proposedEnd
+    && proposedEnd <= selectedSlotEnd
+    && motivo.trim(),
+  )
 
   return (
     <div className="mt-6">
@@ -240,26 +420,52 @@ function StudentAppointmentsView({ estudianteId }) {
       )}
 
       {step === 'list' && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h2 className="font-semibold text-blue-900 text-sm mb-4">Selecciona un Académico</h2>
+        <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="font-semibold text-site-text text-base">Agendar nueva cita</h2>
+              <p className="text-xs text-site-muted mt-1">Selecciona un académico para ver su disponibilidad semanal.</p>
+            </div>
+            <div className="text-xs text-site-muted inline-flex items-center gap-2 px-2 py-1 rounded-md border border-primary/20 bg-primary/5">
+              <CalendarClock size={13} className="text-primary" /> Flujo guiado
+            </div>
+          </div>
+
+          <div className="mb-4 relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-site-muted" />
+            <input
+              type="text"
+              value={academicoSearch}
+              onChange={e => setAcademicoSearch(e.target.value)}
+              placeholder="Buscar por nombre o correo"
+              className="w-full border border-site-border rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+          </div>
 
           {loading ? (
             <Spinner />
           ) : academicos.length === 0 ? (
-            <p className="text-sm text-blue-700">No hay académicos disponibles</p>
+            <p className="text-sm text-site-muted">No hay académicos disponibles</p>
+          ) : filteredAcademicos.length === 0 ? (
+            <p className="text-sm text-site-muted">No hay resultados para tu búsqueda</p>
           ) : (
-            <div className="grid gap-2 md:grid-cols-2">
-              {academicos.map(academicoItem => (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {filteredAcademicos.map(academicoItem => (
                 <button
                   key={academicoItem.uid}
                   onClick={() => handleSelectAcademico(academicoItem)}
-                  className="text-left p-3 bg-white border rounded hover:border-blue-400 transition flex items-center gap-3"
+                  className="text-left p-4 bg-site-bg border border-site-border rounded-lg hover:border-primary/50 hover:shadow-sm transition"
                 >
-                  <User size={16} className="text-blue-600 flex-shrink-0" />
-                  <div>
-                    <div className="font-medium text-sm text-gray-900">{academicoItem.nombre}</div>
-                    <div className="text-xs text-gray-500">{academicoItem.email}</div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
+                      <User size={16} className="text-primary flex-shrink-0" />
+                    </div>
+                    <div>
+                      <div className="font-medium text-sm text-site-text">{academicoItem.nombre}</div>
+                      <div className="text-xs text-site-muted">{academicoItem.email}</div>
+                    </div>
                   </div>
+                  <p className="text-xs text-primary mt-3 font-medium">Ver disponibilidad →</p>
                 </button>
               ))}
             </div>
@@ -267,130 +473,384 @@ function StudentAppointmentsView({ estudianteId }) {
         </div>
       )}
 
-      {step === 'slots' && selectedAcademico && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+      {step === 'calendar' && selectedAcademico && (
+        <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5">
           <button
             onClick={() => setStep('list')}
-            className="text-sm text-blue-600 hover:text-blue-800 mb-3"
+            className="text-sm text-primary hover:text-primary-dark mb-4 inline-flex items-center gap-1"
           >
-            ← Volver a académicos
+            <ArrowLeft size={15} /> Volver a académicos
           </button>
 
-          <h2 className="font-semibold text-blue-900 text-sm mb-4">
-            Slots disponibles de {selectedAcademico.nombre}
-          </h2>
-
-          {loading ? (
-            <Spinner />
-          ) : slots.length === 0 ? (
-            <p className="text-sm text-blue-700">No hay slots disponibles</p>
-          ) : (
-            <div className="grid gap-2 md:grid-cols-3">
-              {slots.map(slot => (
-                <button
-                  key={slot.slotId}
-                  onClick={() => handleSelectSlot(slot)}
-                  className="text-left p-3 bg-white border rounded hover:border-blue-400 transition flex items-center gap-2"
-                >
-                  <Clock size={16} className="text-blue-600 flex-shrink-0" />
-                  <div className="text-sm">
-                    <div className="font-medium text-gray-900">{formatSlotWindow(slot)}</div>
-                    <div className="text-xs text-gray-500">Ventana disponible</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {step === 'confirm' && selectedSlot && selectedAcademico && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-lg">
-          <button
-            onClick={() => setStep('slots')}
-            className="text-sm text-blue-600 hover:text-blue-800 mb-3"
-          >
-            ← Volver a slots
-          </button>
-
-          <h2 className="font-semibold text-blue-900 text-sm mb-4">Confirmar Cita</h2>
-
-          <div className="space-y-3 mb-4">
-            <div className="bg-white p-3 rounded text-sm">
-              <p className="text-gray-600">Académico</p>
-              <p className="font-medium text-gray-900">{selectedAcademico.nombre}</p>
-            </div>
-
-            <div className="bg-white p-3 rounded text-sm">
-              <p className="text-gray-600">Ventana seleccionada</p>
-              <p className="font-medium text-gray-900">{formatSlotWindow(selectedSlot)}</p>
-            </div>
+          <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <h2 className="font-semibold text-site-text text-sm">
+              Disponibilidad semanal de {selectedAcademico.nombre}
+            </h2>
+            <p className="text-xs text-site-muted mt-1">Selecciona un bloque para proponer tu hora y duración.</p>
           </div>
 
-          <form onSubmit={handleCreateCita} className="space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                label="Fecha y hora propuesta"
-                name="fechaHora"
+          <StudentSlotsCalendar
+            weekStart={weekStart}
+            cellMap={calendarCellMap}
+            onSelectSlot={handleSelectSlot}
+            loading={loading}
+            hasSlots={weekSlots.length > 0}
+          />
+        </div>
+      )}
+
+      <Modal
+        isOpen={isBookingOpen && !!selectedSlot && !!selectedAcademico}
+        onClose={closeBookingModal}
+        title="Solicitar cita"
+      >
+        {selectedSlot && (
+          <form onSubmit={handleCreateCita} className="space-y-4">
+            <div className="bg-primary/5 border border-primary/20 rounded-lg p-3 text-sm">
+              <p className="text-primary inline-flex items-center gap-1"><CalendarClock size={14} /> Ventana disponible</p>
+              <p className="font-medium text-site-text mt-0.5">{formatSlotWindow(selectedSlot)}</p>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label htmlFor="student-fecha-hora" className="text-sm font-medium text-site-text inline-flex items-center gap-1">
+                <CalendarClock size={14} className="text-primary" />
+                Hora de inicio
+              </label>
+              <input
+                id="student-fecha-hora"
                 type="datetime-local"
                 value={proposedDateTime}
+                min={selectedSlotStart ? toLocalInputValue(selectedSlotStart) : undefined}
+                max={selectedSlotEnd ? toLocalInputValue(selectedSlotEnd) : undefined}
                 onChange={e => setProposedDateTime(e.target.value)}
                 required
-              />
-
-              <Input
-                label="Duración (minutos)"
-                name="duracion"
-                type="number"
-                value={proposedDuration}
-                onChange={e => setProposedDuration(e.target.value)}
-                required
+                className="border border-site-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
               />
             </div>
 
-            <Input
-              label="Motivo de la Cita"
-              name="motivo"
-              type="text"
-              value={motivo}
-              onChange={e => setMotivo(e.target.value)}
-              placeholder="Ej: Consulta sobre trabajo final"
-              required
-            />
+            <div className="flex flex-col gap-1">
+              <label htmlFor="student-duracion" className="text-sm font-medium text-site-text inline-flex items-center gap-1">
+                <Timer size={14} className="text-primary" />
+                Duración (minutos)
+              </label>
+              <input
+                id="student-duracion"
+                type="number"
+                value={proposedDuration}
+                min={15}
+                step={15}
+                onChange={e => setProposedDuration(e.target.value)}
+                required
+                className="border border-site-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              />
+            </div>
 
-            <Button
-              type="submit"
-              disabled={loading || !motivo.trim()}
-              className="w-full"
-            >
-              {loading ? 'Creando cita...' : 'Solicitar Cita'}
-            </Button>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="student-motivo" className="text-sm font-medium text-site-text inline-flex items-center gap-1">
+                <MessageSquareText size={14} className="text-primary" />
+                Motivo
+              </label>
+              <textarea
+                id="student-motivo"
+                value={motivo}
+                onChange={e => setMotivo(e.target.value)}
+                placeholder="Ej: Consulta sobre trabajo final"
+                required
+                className="border border-site-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 min-h-24"
+              />
+            </div>
+
+            {!isBookingFormValid && (
+              <p className="text-xs text-red-600">
+                Verifica que la hora de inicio y la duración estén dentro de la ventana del slot.
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={closeBookingModal}>Cancelar</Button>
+              <Button type="submit" disabled={loading || !isBookingFormValid}>
+                {loading ? 'Creando cita...' : 'Solicitar cita'}
+              </Button>
+            </div>
           </form>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   )
 }
 
 function AcademicAppointmentsView({ academicoId }) {
+  const [mode, setMode] = useState('weekly')
+  const [weekStart] = useState(() => startOfWeek(new Date()))
+  const [horariosDraft, setHorariosDraft] = useState(getEmptyHorarios())
+  const [weekSlots, setWeekSlots] = useState([])
+  const [weekCitas, setWeekCitas] = useState([])
   const [pendingCitas, setPendingCitas] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [loadingDashboard, setLoadingDashboard] = useState(true)
+  const [savingBase, setSavingBase] = useState(false)
+  const [weeklyEditMode, setWeeklyEditMode] = useState(false)
   const [processingId, setProcessingId] = useState(null)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [drag, setDrag] = useState(null)
+
+  const clearMessages = () => {
+    setError('')
+    setSuccess('')
+  }
+
+  const refreshPendingCitas = async () => {
+    const data = await getPendingCitasForAcademico(academicoId)
+    setPendingCitas(data)
+  }
+
+  const refreshWeekData = async () => {
+    const [slotsData, citasData] = await Promise.all([
+      getAcademicoWeekSlots(academicoId, weekStart),
+      getAcademicoWeekCitas(academicoId, weekStart),
+    ])
+    setWeekSlots(slotsData)
+    setWeekCitas(citasData)
+  }
 
   useEffect(() => {
-    loadPendingCitas()
-  }, [academicoId])
+    const loadDashboard = async () => {
+      setLoadingDashboard(true)
+      clearMessages()
 
-  const loadPendingCitas = async () => {
-    setLoading(true)
+      try {
+        const horarioData = await getHorariosBase(academicoId)
+        const normalized = {
+          ...getEmptyHorarios(),
+          ...horarioData,
+        }
+        setHorariosDraft(normalized)
+
+        const hasHorarioBase = DAYS.some(day => Array.isArray(normalized[day.key]) && normalized[day.key].length > 0)
+        await ensureWeeklySlotsGenerated(academicoId, weekStart)
+
+        await Promise.all([
+          refreshPendingCitas(),
+          refreshWeekData(),
+        ])
+
+        if (!hasHorarioBase) {
+          setError('Aún no tienes horario base configurado. Puedes editarlo sin salir de esta vista.')
+        }
+      } catch (err) {
+        setError('No se pudo cargar el dashboard de citas')
+      } finally {
+        setLoadingDashboard(false)
+      }
+    }
+
+    loadDashboard()
+  }, [academicoId, weekStart])
+
+  const setupSelectionMap = useMemo(() => {
+    const map = {}
+    DAYS.forEach((day) => {
+      map[day.key] = dayRangesToSet(horariosDraft[day.key])
+    })
+    return map
+  }, [horariosDraft])
+
+  const weekSlotMap = useMemo(() => {
+    const map = new Map()
+
+    weekSlots.forEach((slot) => {
+      const start = toDateValue(slot.inicio)
+      const end = toDateValue(slot.fin)
+      if (!start || !end || end <= start) return
+
+      const dayIndex = start.getDay() === 0 ? 6 : start.getDay() - 1
+      if (dayIndex < 0 || dayIndex >= DAYS.length) return
+
+      const startIdx = Math.max(0, dateToBlockIndex(start))
+      const endIdx = Math.min(TIME_BLOCKS.length, Math.ceil(((end.getHours() * 60) + end.getMinutes() - START_MINUTES) / BLOCK_MINUTES))
+
+      for (let idx = startIdx; idx < endIdx; idx += 1) {
+        const key = `${dayIndex}-${idx}`
+        const current = map.get(key) || { slotIds: new Set(), citaStatuses: new Set(), citaStartLabels: [] }
+        current.slotIds.add(slot.slotId)
+        map.set(key, current)
+      }
+    })
+
+    weekCitas.forEach((cita) => {
+      const start = toDateValue(cita.fechaHora)
+      const endFromField = toDateValue(cita.fechaFin)
+      const duration = Number(cita.duracion) || 30
+      const end = endFromField || (start ? new Date(start.getTime() + duration * 60000) : null)
+
+      if (!start || !end || end <= start) return
+
+      for (let dayIndex = 0; dayIndex < DAYS.length; dayIndex += 1) {
+        if (!isSameWeekday(start, dayIndex)) continue
+
+        const startIdx = Math.max(0, dateToBlockIndex(start))
+        const endIdx = Math.min(TIME_BLOCKS.length, Math.ceil(((end.getHours() * 60) + end.getMinutes() - START_MINUTES) / BLOCK_MINUTES))
+
+        const now = new Date()
+        const isPast = end < now
+        const startLabel = `${isPast ? 'PASADA' : cita.estado} · ${new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(start)}-${new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(end)}`
+
+        for (let idx = startIdx; idx < endIdx; idx += 1) {
+          const key = `${dayIndex}-${idx}`
+          const current = map.get(key) || { slotIds: new Set(), citaStatuses: new Set(), citaStartLabels: [] }
+          if (cita.estado) {
+            current.citaStatuses.add(cita.estado)
+          }
+          if (idx === startIdx) {
+            current.citaStartLabels.push({
+              text: startLabel,
+              estado: cita.estado,
+              citaId: cita.citaId,
+              estudianteId: cita.estudianteId,
+              isPast,
+            })
+          }
+          map.set(key, current)
+        }
+      }
+    })
+
+    return map
+  }, [weekSlots, weekCitas])
+
+  const handleStartDrag = (context, dayIndex, blockIndex) => {
+    if (loadingDashboard || savingBase) return
+    if (context === 'weekly' && !weeklyEditMode) return
+
+    clearMessages()
+    const dayKey = DAYS[dayIndex].key
+
+    if (context === 'setup') {
+      const isSelected = setupSelectionMap[dayKey]?.has(blockIndex)
+      setDrag({
+        context,
+        dayIndex,
+        startIndex: blockIndex,
+        currentIndex: blockIndex,
+        action: isSelected ? 'remove' : 'add',
+      })
+      return
+    }
+
+    const cell = weekSlotMap.get(`${dayIndex}-${blockIndex}`)
+    const hasSlot = !!cell?.slotIds?.size
+    const hasBlockingCita = cell?.citaStatuses?.has('PENDIENTE') || cell?.citaStatuses?.has('CONFIRMADA')
+    if (hasSlot && hasBlockingCita) {
+      setError('No puedes eliminar bloques con citas PENDIENTE o CONFIRMADA')
+      return
+    }
+
+    setDrag({
+      context,
+      dayIndex,
+      startIndex: blockIndex,
+      currentIndex: blockIndex,
+      action: hasSlot ? 'delete' : 'add',
+    })
+  }
+
+  const handleMoveDrag = (dayIndex, blockIndex) => {
+    setDrag((current) => {
+      if (!current) return current
+      if (current.dayIndex !== dayIndex) return current
+      return {
+        ...current,
+        currentIndex: blockIndex,
+      }
+    })
+  }
+
+  const finishDrag = async () => {
+    if (!drag) return
+
+    const dragState = drag
+    setDrag(null)
+
+    const { dayIndex, action, context } = dragState
+    const dayKey = DAYS[dayIndex].key
+    const { start, end } = getRangeBounds(dragState)
+
+    if (context === 'setup') {
+      const currentSet = new Set(setupSelectionMap[dayKey] || [])
+      for (let idx = start; idx <= end; idx += 1) {
+        if (action === 'add') currentSet.add(idx)
+        if (action === 'remove') currentSet.delete(idx)
+      }
+
+      setHorariosDraft(prev => ({
+        ...prev,
+        [dayKey]: setToDayRanges(currentSet),
+      }))
+      return
+    }
+
     try {
-      const data = await getPendingCitasForAcademico(academicoId)
-      setPendingCitas(data)
+      if (action === 'add') {
+        const inicio = buildDateForCell(weekStart, dayIndex, start)
+        const fin = buildDateForCell(weekStart, dayIndex, end + 1)
+        await createOneTimeSlot(academicoId, { inicio, fin })
+        setSuccess('Slot adicional creado para esta semana')
+      }
+
+      if (action === 'delete') {
+        const selectedStart = buildDateForCell(weekStart, dayIndex, start)
+        const selectedEnd = buildDateForCell(weekStart, dayIndex, end + 1)
+
+        const overlapped = weekSlots.filter((slot) => {
+          const slotStart = toDateValue(slot.inicio)
+          const slotEnd = toDateValue(slot.fin)
+          if (!slotStart || !slotEnd) return false
+          if (!isSameWeekday(slotStart, dayIndex)) return false
+          return slotStart < selectedEnd && slotEnd > selectedStart
+        })
+
+        const blockedByCita = overlapped.some((slot) => {
+          const slotStart = toDateValue(slot.inicio)
+          const slotEnd = toDateValue(slot.fin)
+          return weekCitas.some((cita) => {
+            const citaStart = toDateValue(cita.fechaHora)
+            const citaEndFromField = toDateValue(cita.fechaFin)
+            const citaDuration = Number(cita.duracion) || 30
+            const citaEnd = citaEndFromField || (citaStart ? new Date(citaStart.getTime() + citaDuration * 60000) : null)
+            if (!slotStart || !slotEnd || !citaStart || !citaEnd) return false
+            return citaStart < slotEnd && citaEnd > slotStart
+          })
+        })
+
+        if (blockedByCita) {
+          setError('No puedes eliminar un slot que contiene citas PENDIENTE o CONFIRMADA')
+          return
+        }
+
+        await Promise.all(overlapped.map(slot => deleteWeekSlot(academicoId, slot.slotId)))
+        setSuccess(overlapped.length > 0 ? 'Slot semanal eliminado' : 'No se encontraron slots para eliminar')
+      }
+
+      await refreshWeekData()
     } catch (err) {
-      setError('Error al cargar citas')
+      setError('No se pudo actualizar el calendario semanal')
+    }
+  }
+
+  const handleSaveBase = async () => {
+    setSavingBase(true)
+    clearMessages()
+    try {
+      await saveHorariosBase(academicoId, horariosDraft)
+      await ensureWeeklySlotsGenerated(academicoId, weekStart)
+      await refreshWeekData()
+      setSuccess('Horario base actualizado y aplicado a la semana actual en bloques faltantes.')
+      setMode('weekly')
+      setWeeklyEditMode(false)
+    } catch (err) {
+      setError('No se pudo guardar el horario base')
     } finally {
-      setLoading(false)
+      setSavingBase(false)
     }
   }
 
@@ -399,6 +859,7 @@ function AcademicAppointmentsView({ academicoId }) {
     try {
       await acceptCita(citaId, estudianteId)
       setPendingCitas(prev => prev.filter(c => c.citaId !== citaId))
+      await refreshWeekData()
     } catch (err) {
       setError('Error al aceptar cita')
     } finally {
@@ -411,6 +872,7 @@ function AcademicAppointmentsView({ academicoId }) {
     try {
       await rejectCita(citaId, estudianteId)
       setPendingCitas(prev => prev.filter(c => c.citaId !== citaId))
+      await refreshWeekData()
     } catch (err) {
       setError('Error al rechazar cita')
     } finally {
@@ -419,8 +881,8 @@ function AcademicAppointmentsView({ academicoId }) {
   }
 
   const formatDateTime = (timestamp) => {
-    if (!timestamp) return 'Fecha no disponible'
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp)
+    const date = toDateValue(timestamp)
+    if (!date) return 'Fecha no disponible'
     return new Intl.DateTimeFormat('es-ES', {
       weekday: 'short',
       year: 'numeric',
@@ -431,69 +893,74 @@ function AcademicAppointmentsView({ academicoId }) {
     }).format(date)
   }
 
-  return (
-    <div className="mt-6">
-      <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-        <h2 className="font-semibold text-purple-900 text-sm mb-4">
-          Solicitudes de Cita Pendientes ({pendingCitas.length})
-        </h2>
-
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-            {error}
-          </div>
-        )}
-
-        {loading ? (
-          <Spinner />
-        ) : pendingCitas.length === 0 ? (
-          <p className="text-sm text-purple-700">No hay solicitudes pendientes</p>
-        ) : (
-          <div className="space-y-3">
-            {pendingCitas.map(cita => (
-              <div key={cita.citaId} className="bg-white border rounded-lg p-4">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                  <div>
-                    <p className="text-xs text-gray-500 mb-0.5">Estudiante ID</p>
-                    <p className="font-mono text-sm text-gray-900">{cita.estudianteId?.slice(0, 8)}...</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500 mb-0.5">Fecha y Hora</p>
-                    <p className="text-sm text-gray-900">{formatDateTime(cita.fechaHora)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500 mb-0.5">Duración</p>
-                    <p className="text-sm text-gray-900">{cita.duracion} minutos</p>
-                  </div>
-                </div>
-
-                <div className="mb-3">
-                  <p className="text-xs text-gray-500 mb-0.5">Motivo</p>
-                  <p className="text-sm text-gray-900">{cita.motivo}</p>
-                </div>
-
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => handleAccept(cita.citaId, cita.estudianteId)}
-                    disabled={processingId === cita.citaId}
-                    className="flex-1"
-                  >
-                    {processingId === cita.citaId ? 'Procesando...' : 'Aceptar'}
-                  </Button>
-                  <Button
-                    onClick={() => handleReject(cita.citaId, cita.estudianteId)}
-                    disabled={processingId === cita.citaId}
-                    variant="danger"
-                    className="flex-1"
-                  >
-                    {processingId === cita.citaId ? 'Procesando...' : 'Rechazar'}
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+  if (loadingDashboard) {
+    return (
+      <div className="mt-6 p-6 bg-site-surface border border-site-border rounded-xl flex justify-center">
+        <Spinner />
       </div>
+    )
+  }
+
+  return (
+    <div className="mt-6 space-y-6">
+      {(error || success) && (
+        <div className="space-y-2">
+          {error && <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">{error}</div>}
+          {success && <div className="p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700">{success}</div>}
+        </div>
+      )}
+
+      <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-6">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-5">
+          <div>
+            <h2 className="text-lg font-semibold text-site-text">Citas solicitadas</h2>
+            <p className="text-sm text-site-muted mt-1">Gestiona primero las solicitudes pendientes de esta semana.</p>
+          </div>
+
+          <div className="inline-flex items-center gap-2 rounded-full bg-yellow-100 text-yellow-800 px-3 py-1 text-sm font-medium">
+            <AlertCircle size={16} />
+            {pendingCitas.length} pendiente{pendingCitas.length === 1 ? '' : 's'}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="border border-site-border rounded-lg bg-site-bg p-4">
+            <p className="text-xs text-site-muted mb-1">Pendientes</p>
+            <p className="text-2xl font-semibold text-site-text">{pendingCitas.length}</p>
+          </div>
+          <div className="border border-site-border rounded-lg bg-site-bg p-4 md:col-span-2">
+            <p className="text-sm text-site-text font-medium">Vista rápida</p>
+            <p className="text-xs text-site-muted mt-1">Las solicitudes pendientes se muestran debajo del calendario con acciones para aceptar o rechazar.</p>
+          </div>
+        </div>
+      </div>
+
+      <WeeklyAppointmentsCalendar
+        mode={mode}
+        weeklyEditMode={weeklyEditMode}
+        savingBase={savingBase}
+        weekStart={weekStart}
+        drag={drag}
+        setupSelectionMap={setupSelectionMap}
+        weekSlotMap={weekSlotMap}
+        processingId={processingId}
+        onOpenSetup={() => { clearMessages(); setMode('setup'); setWeeklyEditMode(false) }}
+        onCloseSetup={() => { clearMessages(); setMode('weekly'); setWeeklyEditMode(false) }}
+        onToggleWeeklyEdit={() => setWeeklyEditMode(prev => !prev)}
+        onSaveBase={handleSaveBase}
+        onStartDrag={handleStartDrag}
+        onMoveDrag={handleMoveDrag}
+        onFinishDrag={finishDrag}
+        onQuickApprove={handleAccept}
+      />
+
+      <PendingCitasSection
+        pendingCitas={pendingCitas}
+        processingId={processingId}
+        onAccept={handleAccept}
+        onReject={handleReject}
+        formatDateTime={formatDateTime}
+      />
     </div>
   )
 }
