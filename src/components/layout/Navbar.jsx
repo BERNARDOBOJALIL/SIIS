@@ -1,14 +1,62 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useWeather } from '../../hooks/useWeather'
+import { useAuth } from '../../context'
+import { ROUTES } from '../../constants'
+import { Button, Input, Modal } from '../common'
 import {
-  Menu, X, Home, Lock,
+  Menu, X, Home, Lock, Calendar,
   Wind, Thermometer, CloudOff, Loader2,
 } from 'lucide-react'
 
 export default function Navbar() {
+  const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loginLoading, setLoginLoading] = useState(false)
+  const [pendingPath, setPendingPath] = useState(ROUTES.APPOINTMENTS)
   const { weather, loading } = useWeather()
+  const { user, isAuthenticated, login, logout, authLoading } = useAuth()
+
+  const handleAppointmentsClick = () => {
+    if (isAuthenticated) {
+      setMenuOpen(false)
+      navigate(ROUTES.APPOINTMENTS)
+      return
+    }
+
+    setPendingPath(ROUTES.APPOINTMENTS)
+    setMenuOpen(false)
+    setLoginError('')
+    setLoginOpen(true)
+  }
+
+  const handleLoginSubmit = async (event) => {
+    event.preventDefault()
+    setLoginError('')
+    setLoginLoading(true)
+
+    try {
+      await login(email, password)
+      setLoginOpen(false)
+      setEmail('')
+      setPassword('')
+      navigate(pendingPath)
+    } catch {
+      setLoginError('No se pudo iniciar sesión. Verifica tu correo y contraseña.')
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    await logout()
+    setMenuOpen(false)
+    navigate(ROUTES.HOME)
+  }
 
   return (
     <header
@@ -118,9 +166,69 @@ export default function Navbar() {
                 {label}
               </Link>
             ))}
+
+            <button
+              type="button"
+              onClick={handleAppointmentsClick}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-[13px] font-medium transition-colors"
+              style={{ color: 'var(--color-primary)' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-bg)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Calendar size={14} />
+              Citas
+            </button>
+
+            {!authLoading && isAuthenticated && (
+              <>
+                <div className="mx-4 my-2 h-px" style={{ background: 'var(--color-border)' }} />
+                <div className="px-4 pb-2">
+                  <p className="text-[11px] mb-2" style={{ color: 'var(--color-text-muted)' }}>
+                    {user?.email}
+                  </p>
+                  <Button onClick={handleLogout} variant="secondary" className="w-full !text-[12px] !py-1.5">
+                    Cerrar sesión
+                  </Button>
+                </div>
+              </>
+            )}
           </nav>
         </>
       )}
+
+      <Modal
+        isOpen={loginOpen}
+        onClose={() => !loginLoading && setLoginOpen(false)}
+        title="Iniciar sesión"
+      >
+        <form className="flex flex-col gap-3" onSubmit={handleLoginSubmit}>
+          <Input
+            label="Correo"
+            name="email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="usuario@correo.com"
+            required
+          />
+
+          <Input
+            label="Contraseña"
+            name="password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="••••••••"
+            required
+          />
+
+          {loginError && <p className="text-xs text-red-500">{loginError}</p>}
+
+          <Button type="submit" disabled={loginLoading} className="mt-1">
+            {loginLoading ? 'Ingresando...' : 'Entrar'}
+          </Button>
+        </form>
+      </Modal>
     </header>
   )
 }
