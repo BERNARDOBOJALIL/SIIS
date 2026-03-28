@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useWeather } from '../../hooks/useWeather'
 import { useAuth } from '../../context'
+import { useChatContext } from './MainLayout'
 import { ROUTES } from '../../constants'
 import { Button, Input, Modal } from '../common'
 import {
-  Menu, X, Home, Lock, Calendar,
+  Menu, X, Home, Lock, Calendar, MessageCircle,
   Wind, Thermometer, CloudOff, Loader2,
 } from 'lucide-react'
 
@@ -20,6 +21,7 @@ export default function Navbar() {
   const [pendingPath, setPendingPath] = useState(ROUTES.APPOINTMENTS)
   const { weather, loading } = useWeather()
   const { user, isAuthenticated, login, logout, authLoading } = useAuth()
+  const { chatOpen, setChatOpen } = useChatContext()
 
   const handleAppointmentsClick = () => {
     if (isAuthenticated) {
@@ -91,7 +93,33 @@ export default function Navbar() {
         </Link>
       </div>
 
-      {/* ── Widget de clima ── */}
+      {/* ── CENTRO: Widget de clima + Botón de Chat ── */}
+      <div className="flex items-center gap-2">
+        {/* Botón de Chat */}
+        <button
+          onClick={() => setChatOpen(o => !o)}
+          title="Abrir chat con agente inteligente"
+          className="p-2 rounded-lg transition-all duration-200 relative group hidden sm:flex items-center justify-center hover:scale-110"
+          style={{
+            background: chatOpen ? 'rgba(204, 0, 0, 0.3)' : 'rgba(255,255,255,0.13)',
+            border: chatOpen ? '1.5px solid rgba(255,255,255,0.4)' : '1px solid rgba(255,255,255,0.18)',
+            color: 'white',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'rgba(255,255,255,0.2)'
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = chatOpen ? 'rgba(204, 0, 0, 0.3)' : 'rgba(255,255,255,0.13)'
+            e.currentTarget.style.borderColor = chatOpen ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.18)'
+          }}
+        >
+          <MessageCircle size={16} />
+          {/* Badge de status */}
+          <span className="absolute top-1 right-0.5 w-2.5 h-2.5 bg-green-400 rounded-full animate-pulse shadow-lg" />
+        </button>
+
+        {/* Widget de clima */}
       <div
         className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg"
         style={{ background: 'rgba(255,255,255,0.13)', border: '1px solid rgba(255,255,255,0.18)' }}
@@ -125,6 +153,7 @@ export default function Navbar() {
             </span>
           </div>
         )}
+      </div>
       </div>
 
       {/* ── Menú desplegable ── */}
