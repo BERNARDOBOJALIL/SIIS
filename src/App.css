@@ -36,3 +36,54 @@
 .read-the-docs {
   color: #888;
 }
+
+@keyframes dashboard-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.student-dashboard-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+.student-dashboard-enter {
+  animation: dashboard-fade-up 360ms ease-out both;
+}
+
+.student-dashboard-enter-item {
+  animation: dashboard-fade-up 280ms ease-out both;
+}
+
+.student-dashboard-panel {
+  min-height: 0;
+}
+
+.dashboard-main-grid {
+  height: 100%;
+  min-height: 0;
+}
+
+.academic-dashboard-enter {
+  animation: dashboard-fade-up 340ms ease-out both;
+}
+
+.academic-dashboard-panel {
+  animation: dashboard-fade-up 300ms ease-out both;
+}
+
+@media (max-width: 1279px) {
+  .student-dashboard-shell {
+    min-height: auto;
+  }
+
+  .dashboard-main-grid {
+    min-height: auto;
+  }
+}

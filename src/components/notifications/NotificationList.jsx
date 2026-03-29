@@ -12,7 +12,7 @@ export default function NotificationList({ notifications, loading, error }) {
 
   if (!notifications.length) {
     return (
-      <div className="h-full min-h-48 flex flex-col items-center justify-center text-center border border-dashed border-primary/30 rounded-lg p-4 bg-primary/5">
+      <div className="min-h-44 flex flex-col items-center justify-center text-center border border-dashed border-primary/30 rounded-lg p-4 bg-primary/5">
         <div className="w-12 h-12 rounded-full bg-site-surface border border-primary/20 flex items-center justify-center mb-3">
           <Bell size={20} className="text-primary" />
         </div>
@@ -25,7 +25,9 @@ export default function NotificationList({ notifications, loading, error }) {
   return (
     <div className="space-y-2">
       {notifications.map(notification => (
-        <NotificationItem key={notification.notificationId} notification={notification} />
+        <div key={notification.notificationId} className="student-dashboard-enter-item">
+          <NotificationItem notification={notification} />
+        </div>
       ))}
     </div>
   )

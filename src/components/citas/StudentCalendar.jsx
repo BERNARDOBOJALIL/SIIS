@@ -62,20 +62,20 @@ export default function StudentCalendar({ citas, loading, onCancelCita }) {
   }, [citasInWeek])
 
   return (
-    <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5 relative overflow-hidden">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div className="bg-site-surface border border-site-border rounded-xl p-2.5 md:p-3 relative overflow-hidden h-full flex flex-col">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="font-semibold text-site-text text-base inline-flex items-center gap-2">
             <CalendarDays size={17} className="text-primary" /> Mi calendario semanal
           </h3>
           <p className="text-xs text-site-muted mt-1">{formatWeekRange(weekStart)}</p>
         </div>
-        <div className="text-xs text-site-muted inline-flex items-center gap-2 rounded-md bg-primary/5 border border-primary/20 px-2 py-1">
+        <div className="text-[11px] text-site-muted inline-flex items-center gap-2 rounded-md bg-primary/5 border border-primary/20 px-2 py-1">
           <Info size={13} className="text-primary" /> Haz clic en una cita para ver detalle
         </div>
       </div>
 
-      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-site-muted">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-site-muted">
         <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-500" />Pendiente</span>
         <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-600" />Confirmada</span>
         <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-600" />Rechazada</span>
@@ -89,12 +89,12 @@ export default function StudentCalendar({ citas, loading, onCancelCita }) {
           <p className="text-xs text-site-muted mt-1">Usa “Agendar nueva cita” para reservar con un académico.</p>
         </div>
       ) : (
-        <div className="border border-site-border rounded-lg bg-white overflow-hidden">
-          <div>
-            <div className="grid grid-cols-[56px_repeat(6,minmax(0,1fr))] bg-site-bg border-b border-site-border">
-              <div className="px-1 py-2 text-[10px] font-semibold text-site-text">Hora</div>
+        <div className="border border-site-border rounded-lg bg-white overflow-hidden flex-1 min-h-0">
+          <div className="h-full min-h-0 overflow-auto">
+            <div className="grid grid-cols-[56px_repeat(6,minmax(0,1fr))] bg-site-bg border-b border-site-border sticky top-0 z-10">
+              <div className="px-1 py-1.5 text-[10px] font-semibold text-site-text">Hora</div>
               {DAYS.map(day => (
-                <div key={day.key} className="px-1 py-2 text-[10px] sm:text-xs font-semibold text-site-text border-l border-site-border text-center">
+                <div key={day.key} className="px-1 py-1.5 text-[10px] sm:text-[11px] font-semibold text-site-text border-l border-site-border text-center">
                   {day.label}
                 </div>
               ))}
@@ -105,7 +105,7 @@ export default function StudentCalendar({ citas, loading, onCancelCita }) {
                 {TIME_BLOCKS.map((blockMinutes, index) => (
                   <div
                     key={blockMinutes}
-                    className="absolute left-0 right-0 border-b border-site-border/40 text-[9px] sm:text-[10px] text-site-muted px-1"
+                    className="absolute left-0 right-0 border-b border-site-border/40 text-[9px] text-site-muted px-1"
                     style={{ top: `${index * ROW_HEIGHT}px`, height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px` }}
                   >
                     {String(Math.floor(blockMinutes / 60)).padStart(2, '0')}:{String(blockMinutes % 60).padStart(2, '0')}

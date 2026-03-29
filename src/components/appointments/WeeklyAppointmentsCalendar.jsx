@@ -26,8 +26,8 @@ export default function WeeklyAppointmentsCalendar({
   processingId,
 }) {
   return (
-    <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
+    <div className="h-full min-h-0 bg-site-surface border border-site-border rounded-xl p-3 md:p-4 flex flex-col">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-3">
         <div>
           <h3 className="font-semibold text-site-text text-base">Calendario semanal</h3>
           <p className="text-xs text-site-muted mt-1">Semana actual: {formatWeekLabel(weekStart)}</p>
@@ -59,28 +59,29 @@ export default function WeeklyAppointmentsCalendar({
         </div>
       </div>
 
-      <div className="overflow-x-auto border border-site-border rounded-lg bg-white">
-        <div className="min-w-[920px]">
-          <div className="grid grid-cols-[100px_repeat(6,minmax(120px,1fr))] bg-site-bg border-b border-site-border">
-            <div className="p-2 text-xs font-semibold text-site-text">Hora</div>
+      <div className="flex-1 min-h-0 border border-site-border rounded-lg bg-white overflow-hidden">
+        <div className="h-full overflow-auto">
+          <div className="grid grid-cols-[56px_repeat(6,minmax(0,1fr))] bg-site-bg border-b border-site-border sticky top-0 z-10">
+            <div className="p-1.5 text-[10px] font-semibold text-site-text">Hora</div>
             {DAYS.map(day => (
-              <div key={day.key} className="p-2 text-xs font-semibold text-site-text border-l border-site-border">
+              <div key={day.key} className="p-1.5 text-[10px] font-semibold text-site-text border-l border-site-border text-center">
                 {day.label}
               </div>
             ))}
           </div>
 
-          {TIME_BLOCKS.map((blockMinutes, blockIndex) => (
-            <div
-              key={blockMinutes}
-              className="grid grid-cols-[100px_repeat(6,minmax(120px,1fr))] border-b border-site-border/60 last:border-b-0"
-              onMouseUp={onFinishDrag}
-            >
-              <div className="p-2 text-xs text-site-muted border-r border-site-border/60 select-none">
-                {minutesToTime(blockMinutes)}
-              </div>
+          <div>
+            {TIME_BLOCKS.map((blockMinutes, blockIndex) => (
+              <div
+                key={blockMinutes}
+                className="grid grid-cols-[56px_repeat(6,minmax(0,1fr))] border-b border-site-border/60 last:border-b-0"
+                onMouseUp={onFinishDrag}
+              >
+                <div className="px-1 py-1 text-[9px] text-site-muted border-r border-site-border/60 select-none leading-4">
+                  {minutesToTime(blockMinutes)}
+                </div>
 
-              {DAYS.map((day, dayIndex) => {
+                {DAYS.map((day, dayIndex) => {
                 const isDraggingThisDay = drag?.dayIndex === dayIndex
                 const inDragRange = isDraggingThisDay && (() => {
                   const { start, end } = getRangeBounds(drag)
@@ -89,6 +90,8 @@ export default function WeeklyAppointmentsCalendar({
 
                 if (mode === 'setup') {
                   const isActive = setupSelectionMap[day.key]?.has(blockIndex)
+                  const setupBackground = isActive ? 'rgba(16, 185, 129, 0.72)' : 'rgba(255, 255, 255, 1)'
+                  const setupHoverBackground = isActive ? 'rgba(5, 150, 105, 0.8)' : 'rgba(16, 185, 129, 0.12)'
                   return (
                     <button
                       key={`${day.key}-${blockMinutes}`}
@@ -96,12 +99,20 @@ export default function WeeklyAppointmentsCalendar({
                       onMouseDown={() => onStartDrag('setup', dayIndex, blockIndex)}
                       onMouseEnter={() => onMoveDrag(dayIndex, blockIndex)}
                       onMouseUp={onFinishDrag}
-                      className={`h-8 border-l border-site-border/60 transition-colors ${isActive ? 'bg-blue-500/80' : 'bg-white hover:bg-blue-50'} ${inDragRange ? 'ring-1 ring-blue-300' : ''}`}
+                      className={`h-8 border-l border-site-border/60 transition-colors ${inDragRange ? 'ring-1 ring-emerald-300' : ''}`}
+                      style={{ backgroundColor: setupBackground }}
+                      onMouseOver={(event) => {
+                        event.currentTarget.style.backgroundColor = setupHoverBackground
+                      }}
+                      onMouseOut={(event) => {
+                        event.currentTarget.style.backgroundColor = setupBackground
+                      }}
                     />
                   )
                 }
 
                 const cell = weekSlotMap.get(`${dayIndex}-${blockIndex}`)
+                const hasSlot = !!cell?.slotIds?.size
                 const isConfirmada = !!cell?.citaStatuses?.has('CONFIRMADA')
                 const isPendiente = !!cell?.citaStatuses?.has('PENDIENTE')
                 const citaLabels = cell?.citaStartLabels || []
@@ -109,11 +120,13 @@ export default function WeeklyAppointmentsCalendar({
 
                 let baseColor = 'bg-white'
                 if (isConfirmada) {
-                  baseColor = 'bg-blue-500/75'
+                  baseColor = 'bg-emerald-500/75'
                 } else if (isPendiente) {
                   baseColor = 'bg-amber-400/80'
+                } else if (hasSlot) {
+                  baseColor = 'bg-emerald-100/90'
                 } else if (isEditable) {
-                  baseColor = 'bg-white hover:bg-blue-50'
+                  baseColor = 'bg-white hover:bg-primary/10'
                 }
 
                 const sharedClass = `h-8 border-l border-site-border/60 transition-colors ${baseColor} ${inDragRange ? 'ring-1 ring-emerald-300' : ''}`
@@ -122,7 +135,7 @@ export default function WeeklyAppointmentsCalendar({
                   return (
                     <div
                       key={`${day.key}-${blockMinutes}`}
-                      title={isConfirmada ? 'Cita CONFIRMADA' : isPendiente ? 'Cita PENDIENTE' : 'Sin cita'}
+                      title={isConfirmada ? 'Cita CONFIRMADA' : isPendiente ? 'Cita PENDIENTE' : hasSlot ? 'Slot disponible' : 'Sin slot'}
                       className={`${sharedClass} relative overflow-hidden px-1`}
                     >
                       {citaLabels.length > 0 && (
@@ -166,7 +179,7 @@ export default function WeeklyAppointmentsCalendar({
                         {citaLabels.slice(0, 2).map((label, labelIndex) => (
                           <div
                             key={`${label.text}-${labelIndex}`}
-                            className={`text-[9px] leading-none font-semibold truncate px-1 py-0.5 rounded ${label.isPast ? 'bg-slate-700 text-white' : label.estado === 'CONFIRMADA' ? 'bg-blue-700 text-white' : 'bg-amber-700 text-white'}`}
+                              className={`text-[9px] leading-none font-semibold truncate px-1 py-0.5 rounded ${label.isPast ? 'bg-slate-700 text-white' : label.estado === 'CONFIRMADA' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}`}
                           >
                             {label.text}
                           </div>
@@ -176,23 +189,25 @@ export default function WeeklyAppointmentsCalendar({
                   </button>
                 )
               })}
-            </div>
-          ))}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="mt-3 text-xs text-site-muted flex flex-wrap items-center gap-4">
+      <div className="mt-2 text-[11px] text-site-muted flex flex-wrap items-center gap-3">
         {mode === 'setup' ? (
           <>
-            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-500/80" />Horario base</span>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/80" />Horario base</span>
             <span>Arrastra para agregar o quitar bloques de disponibilidad recurrente</span>
           </>
         ) : (
           <>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" />Slot disponible</span>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-400/80" />Bloque con cita PENDIENTE</span>
-            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-500/80" />Bloque con cita CONFIRMADA</span>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/80" />Bloque con cita CONFIRMADA</span>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-slate-600" />Cita pasada</span>
-            <span className="inline-flex items-center gap-1"><span className="font-semibold text-amber-700">PEND</span> Pendiente • <span className="font-semibold text-blue-700">CONF</span> Confirmada • <span className="font-semibold text-slate-700">PASADA</span></span>
+            <span className="inline-flex items-center gap-1"><span className="font-semibold text-amber-700">PEND</span> Pendiente • <span className="font-semibold text-emerald-700">CONF</span> Confirmada • <span className="font-semibold text-slate-700">PASADA</span></span>
             <span>{weeklyEditMode ? 'Modo edición activo para disponibilidad semanal' : 'Calendario centrado en citas; usa “Aprobar” directamente en bloques pendientes'}</span>
           </>
         )}

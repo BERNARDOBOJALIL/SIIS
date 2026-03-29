@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context'
 import { Spinner, Button, Modal } from '../components/common'
-import { User, CheckCircle, AlertCircle, LayoutDashboard, CalendarPlus, Search, ArrowLeft, CalendarClock, Timer, MessageSquareText } from 'lucide-react'
+import { User, CheckCircle, AlertCircle, LayoutDashboard, CalendarPlus, Search, ArrowLeft, CalendarClock, Timer, MessageSquareText, Info } from 'lucide-react'
 import WeeklyAppointmentsCalendar from '../components/appointments/WeeklyAppointmentsCalendar'
 import PendingCitasSection from '../components/appointments/PendingCitasSection'
 import StudentSlotsCalendar from '../components/appointments/StudentSlotsCalendar'
@@ -31,6 +31,7 @@ import {
   getHorariosBase,
   saveHorariosBase,
   ensureWeeklySlotsGenerated,
+  syncWeeklySlotsFromBase,
   getAcademicoWeekSlots,
   createOneTimeSlot,
   deleteWeekSlot,
@@ -40,6 +41,9 @@ import {
 export default function AppointmentsPage() {
   const { userData, userRole, authLoading } = useAuth()
   const isStudentDashboard = userRole === 'ESTUDIANTE'
+  const isAcademicDashboard = userRole === 'ACADEMICO'
+  const isFullHeightMode = isStudentDashboard || isAcademicDashboard
+  const roleLabel = formatRoleLabel(userRole)
 
   if (authLoading) {
     return (
@@ -50,12 +54,31 @@ export default function AppointmentsPage() {
   }
 
   return (
-    <section className="h-full overflow-auto p-6">
-      <div className={isStudentDashboard ? 'w-full' : 'max-w-5xl'}>
-        <h1 className="text-2xl font-semibold text-site-text">Citas</h1>
-        <p className="mt-1 text-sm text-site-muted">
-          {userData?.nombre || 'Usuario'} • <span className="font-medium">{userRole || 'Sin rol'}</span>
-        </p>
+    <section className={`h-full ${isFullHeightMode ? 'overflow-hidden p-4 md:p-5' : 'overflow-auto p-6'}`}>
+      <div className={isFullHeightMode ? 'w-full h-full flex flex-col' : 'w-full'}>
+        {!isFullHeightMode && (
+          <header className="rounded-2xl border border-site-border bg-site-surface px-4 py-4 md:px-5 md:py-5 shadow-[0_10px_24px_rgba(17,17,17,0.04)]">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h1 className="text-xl md:text-2xl font-semibold text-site-text tracking-tight">
+                  Centro de Citas
+                </h1>
+                <p className="mt-1 text-sm text-site-muted">
+                  Gestiona tus reuniones en un solo lugar.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-primary/25 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
+                  {roleLabel}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-site-border bg-site-bg px-3 py-1 text-xs font-medium text-site-text">
+                  {userData?.nombre || 'Usuario'}
+                </span>
+              </div>
+            </div>
+          </header>
+        )}
 
         {userRole === 'ESTUDIANTE' && userData?.uid && (
           <StudentWorkspace
@@ -79,11 +102,18 @@ export default function AppointmentsPage() {
   )
 }
 
+function formatRoleLabel(role) {
+  if (!role) return 'Sin rol'
+
+  const normalized = role.toString().toLowerCase()
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
 function StudentWorkspace({ estudianteId, studentName, studentEmail }) {
   const [view, setView] = useState('dashboard') // 'dashboard' | 'book'
 
   return (
-    <div className="mt-6 space-y-4">
+    <div className="mt-2 flex-1 min-h-0 flex flex-col gap-3">
       <div className="bg-site-surface border border-site-border rounded-xl p-2 flex flex-wrap items-center gap-2">
         <Button
           variant={view === 'dashboard' ? 'primary' : 'secondary'}
@@ -101,15 +131,17 @@ function StudentWorkspace({ estudianteId, studentName, studentEmail }) {
         </Button>
       </div>
 
-      {view === 'dashboard' ? (
-        <StudentDashboard
-          estudianteId={estudianteId}
-          studentName={studentName}
-          studentEmail={studentEmail}
-        />
-      ) : (
-        <StudentAppointmentsView estudianteId={estudianteId} />
-      )}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {view === 'dashboard' ? (
+          <StudentDashboard
+            estudianteId={estudianteId}
+            studentName={studentName}
+            studentEmail={studentEmail}
+          />
+        ) : (
+          <StudentAppointmentsView estudianteId={estudianteId} />
+        )}
+      </div>
     </div>
   )
 }
@@ -130,6 +162,7 @@ function StudentAppointmentsView({ estudianteId }) {
   const [success, setSuccess] = useState('')
   const [weekStart] = useState(() => startOfWeek(new Date()))
   const [academicoSearch, setAcademicoSearch] = useState('')
+  const [showCalendarHelp, setShowCalendarHelp] = useState(false)
 
   useEffect(() => {
     loadAcademicos()
@@ -404,7 +437,7 @@ function StudentAppointmentsView({ estudianteId }) {
   )
 
   return (
-    <div className="mt-6">
+    <div className="mt-3 h-full min-h-0">
       {success && (
         <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded text-sm text-green-700 flex items-center gap-2">
           <CheckCircle size={16} />
@@ -474,20 +507,33 @@ function StudentAppointmentsView({ estudianteId }) {
       )}
 
       {step === 'calendar' && selectedAcademico && (
-        <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5">
+        <div className="bg-site-surface border border-site-border rounded-xl p-3 md:p-4 relative">
           <button
             onClick={() => setStep('list')}
-            className="text-sm text-primary hover:text-primary-dark mb-4 inline-flex items-center gap-1"
+            className="text-xs text-primary hover:text-primary-dark mb-2 inline-flex items-center gap-1"
           >
             <ArrowLeft size={15} /> Volver a académicos
           </button>
 
-          <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
             <h2 className="font-semibold text-site-text text-sm">
               Disponibilidad semanal de {selectedAcademico.nombre}
             </h2>
-            <p className="text-xs text-site-muted mt-1">Selecciona un bloque para proponer tu hora y duración.</p>
+            <button
+              type="button"
+              onClick={() => setShowCalendarHelp(prev => !prev)}
+              className="inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-[11px] text-primary hover:bg-primary/10 transition-colors"
+            >
+              <Info size={12} /> Ayuda
+            </button>
           </div>
+
+          {showCalendarHelp && (
+            <div className="absolute right-3 top-20 z-20 w-[280px] rounded-lg border border-primary/20 bg-site-surface shadow-lg p-3">
+              <p className="text-[11px] font-semibold text-site-text mb-1">Como seleccionar</p>
+              <p className="text-[11px] text-site-muted">Haz clic en un bloque verde o ambar para abrir el formulario y proponer hora y duracion.</p>
+            </div>
+          )}
 
           <StudentSlotsCalendar
             weekStart={weekStart}
@@ -842,9 +888,9 @@ function AcademicAppointmentsView({ academicoId }) {
     clearMessages()
     try {
       await saveHorariosBase(academicoId, horariosDraft)
-      await ensureWeeklySlotsGenerated(academicoId, weekStart)
+      const syncResult = await syncWeeklySlotsFromBase(academicoId, weekStart)
       await refreshWeekData()
-      setSuccess('Horario base actualizado y aplicado a la semana actual en bloques faltantes.')
+      setSuccess(`Horario base actualizado. Semana sincronizada: ${syncResult.created} bloque(s) creados, ${syncResult.deleted} bloque(s) eliminados.`)
       setMode('weekly')
       setWeeklyEditMode(false)
     } catch (err) {
@@ -895,14 +941,14 @@ function AcademicAppointmentsView({ academicoId }) {
 
   if (loadingDashboard) {
     return (
-      <div className="mt-6 p-6 bg-site-surface border border-site-border rounded-xl flex justify-center">
+      <div className="mt-4 flex-1 p-6 bg-site-surface border border-site-border rounded-xl flex justify-center items-center">
         <Spinner />
       </div>
     )
   }
 
   return (
-    <div className="mt-6 space-y-6">
+    <div className="mt-2 flex-1 min-h-0 flex flex-col gap-4 academic-dashboard-enter">
       {(error || success) && (
         <div className="space-y-2">
           {error && <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">{error}</div>}
@@ -910,57 +956,59 @@ function AcademicAppointmentsView({ academicoId }) {
         </div>
       )}
 
-      <div className="bg-site-surface border border-site-border rounded-xl p-4 md:p-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-5">
-          <div>
-            <h2 className="text-lg font-semibold text-site-text">Citas solicitadas</h2>
-            <p className="text-sm text-site-muted mt-1">Gestiona primero las solicitudes pendientes de esta semana.</p>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4 flex-1 min-h-0">
+        <section className="academic-dashboard-panel bg-site-surface border border-site-border rounded-2xl p-3 md:p-4 min-h-0 flex flex-col shadow-[0_10px_28px_rgba(17,17,17,0.05)]">
+          <div className="mb-3 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-site-text">Agenda académica semanal</h2>
+              <p className="text-xs text-site-muted mt-0.5">Gestiona disponibilidad y confirma solicitudes sin salir de esta vista.</p>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">
+              <AlertCircle size={14} />
+              {pendingCitas.length} pendiente{pendingCitas.length === 1 ? '' : 's'}
+            </div>
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-full bg-yellow-100 text-yellow-800 px-3 py-1 text-sm font-medium">
-            <AlertCircle size={16} />
-            {pendingCitas.length} pendiente{pendingCitas.length === 1 ? '' : 's'}
+          <div className="flex-1 min-h-0">
+            <WeeklyAppointmentsCalendar
+              mode={mode}
+              weeklyEditMode={weeklyEditMode}
+              savingBase={savingBase}
+              weekStart={weekStart}
+              drag={drag}
+              setupSelectionMap={setupSelectionMap}
+              weekSlotMap={weekSlotMap}
+              processingId={processingId}
+              onOpenSetup={() => { clearMessages(); setMode('setup'); setWeeklyEditMode(false) }}
+              onCloseSetup={() => { clearMessages(); setMode('weekly'); setWeeklyEditMode(false) }}
+              onToggleWeeklyEdit={() => setWeeklyEditMode(prev => !prev)}
+              onSaveBase={handleSaveBase}
+              onStartDrag={handleStartDrag}
+              onMoveDrag={handleMoveDrag}
+              onFinishDrag={finishDrag}
+              onQuickApprove={handleAccept}
+            />
           </div>
-        </div>
+        </section>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div className="border border-site-border rounded-lg bg-site-bg p-4">
-            <p className="text-xs text-site-muted mb-1">Pendientes</p>
-            <p className="text-2xl font-semibold text-site-text">{pendingCitas.length}</p>
+        <aside className="academic-dashboard-panel bg-site-surface border border-site-border rounded-2xl p-3 md:p-4 min-h-0 flex flex-col shadow-[0_10px_28px_rgba(17,17,17,0.05)]">
+          <div className="mb-3">
+            <h3 className="text-base font-semibold text-site-text">Solicitudes pendientes</h3>
+            <p className="text-xs text-site-muted mt-1">Aprobar o rechazar en un flujo rapido.</p>
           </div>
-          <div className="border border-site-border rounded-lg bg-site-bg p-4 md:col-span-2">
-            <p className="text-sm text-site-text font-medium">Vista rápida</p>
-            <p className="text-xs text-site-muted mt-1">Las solicitudes pendientes se muestran debajo del calendario con acciones para aceptar o rechazar.</p>
+
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+            <PendingCitasSection
+              pendingCitas={pendingCitas}
+              processingId={processingId}
+              onAccept={handleAccept}
+              onReject={handleReject}
+              formatDateTime={formatDateTime}
+              compact
+            />
           </div>
-        </div>
+        </aside>
       </div>
-
-      <WeeklyAppointmentsCalendar
-        mode={mode}
-        weeklyEditMode={weeklyEditMode}
-        savingBase={savingBase}
-        weekStart={weekStart}
-        drag={drag}
-        setupSelectionMap={setupSelectionMap}
-        weekSlotMap={weekSlotMap}
-        processingId={processingId}
-        onOpenSetup={() => { clearMessages(); setMode('setup'); setWeeklyEditMode(false) }}
-        onCloseSetup={() => { clearMessages(); setMode('weekly'); setWeeklyEditMode(false) }}
-        onToggleWeeklyEdit={() => setWeeklyEditMode(prev => !prev)}
-        onSaveBase={handleSaveBase}
-        onStartDrag={handleStartDrag}
-        onMoveDrag={handleMoveDrag}
-        onFinishDrag={finishDrag}
-        onQuickApprove={handleAccept}
-      />
-
-      <PendingCitasSection
-        pendingCitas={pendingCitas}
-        processingId={processingId}
-        onAccept={handleAccept}
-        onReject={handleReject}
-        formatDateTime={formatDateTime}
-      />
     </div>
   )
 }

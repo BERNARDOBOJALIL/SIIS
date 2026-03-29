@@ -575,3 +575,98 @@ export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new D
 
   return { generated: true, count: slotsToCreate.length, start: weekStart, end: weekEnd }
 }
+
+/**
+ * Sincroniza los slots BASE de la semana actual con el horario base guardado.
+ * - Crea bloques faltantes.
+ * - Elimina bloques BASE obsoletos que no tengan citas PENDIENTE/CONFIRMADA.
+ * @param {string} academicoId
+ * @param {Date} dateInWeek
+ * @returns {Promise<{created: number, deleted: number}>}
+ */
+export async function syncWeeklySlotsFromBase(academicoId, dateInWeek = new Date()) {
+  const weekStart = getWeekStart(dateInWeek)
+  const horarios = await getHorariosBase(academicoId)
+  const [existingSlots, weekCitas] = await Promise.all([
+    getAcademicoWeekSlots(academicoId, weekStart),
+    getAcademicoWeekCitas(academicoId, weekStart),
+  ])
+
+  const desiredRangeKeys = new Set()
+  const desiredRanges = []
+
+  DAY_KEYS.forEach((dayKey, index) => {
+    const date = new Date(weekStart)
+    date.setDate(weekStart.getDate() + index)
+
+    const ranges = Array.isArray(horarios[dayKey]) ? horarios[dayKey] : []
+    ranges.forEach((range) => {
+      const inicio = buildDateFromTime(date, range.inicio)
+      const fin = buildDateFromTime(date, range.fin)
+      if (fin <= inicio) return
+
+      const key = `${inicio.getTime()}-${fin.getTime()}`
+      desiredRangeKeys.add(key)
+      desiredRanges.push({ inicio, fin, key })
+    })
+  })
+
+  const citasActivas = weekCitas.filter(cita => cita.estado === 'PENDIENTE' || cita.estado === 'CONFIRMADA')
+
+  const slotHasBlockingCita = (slot) => {
+    const slotStart = toDate(slot.inicio)
+    const slotEnd = toDate(slot.fin)
+    if (!slotStart || !slotEnd) return false
+
+    return citasActivas.some((cita) => {
+      const citaStart = toDate(cita.fechaHora)
+      const citaEndField = toDate(cita.fechaFin)
+      const citaDuration = Number(cita.duracion) || 30
+      const citaEnd = citaEndField || (citaStart ? new Date(citaStart.getTime() + citaDuration * 60000) : null)
+      if (!citaStart || !citaEnd) return false
+      return citaStart < slotEnd && citaEnd > slotStart
+    })
+  }
+
+  const existingRangeKeys = new Set()
+  const slotsToDelete = []
+
+  existingSlots.forEach((slot) => {
+    const start = toDate(slot.inicio)
+    const end = toDate(slot.fin)
+    if (!start || !end || end <= start) return
+
+    const key = `${start.getTime()}-${end.getTime()}`
+    const isBaseSlot = slot.source === 'BASE'
+
+    if (isBaseSlot && !desiredRangeKeys.has(key) && !slotHasBlockingCita(slot)) {
+      slotsToDelete.push(slot)
+      return
+    }
+
+    existingRangeKeys.add(key)
+  })
+
+  const slotsToCreate = desiredRanges
+    .filter(range => !existingRangeKeys.has(range.key))
+    .map(range => ({
+      inicio: range.inicio,
+      fin: range.fin,
+      disponible: true,
+      source: 'BASE',
+      weekStart: Timestamp.fromDate(weekStart),
+      generatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }))
+
+  await Promise.all([
+    ...slotsToDelete.map(slot => deleteDoc(doc(db, `calendarios/${academicoId}/slots`, slot.slotId))),
+    ...slotsToCreate.map(slot => addDoc(collection(db, `calendarios/${academicoId}/slots`), slot)),
+  ])
+
+  return {
+    created: slotsToCreate.length,
+    deleted: slotsToDelete.length,
+  }
+}

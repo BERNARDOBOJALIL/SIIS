@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BellRing, CalendarClock, CircleCheckBig, CircleX, ClipboardList, UserCircle2 } from 'lucide-react'
+import {
+  BellRing,
+  CalendarClock,
+  ChevronRight,
+  CircleCheckBig,
+  CircleX,
+  ClipboardList,
+  UserCircle2,
+} from 'lucide-react'
 import StudentCalendar from '../components/citas/StudentCalendar'
 import NotificationList from '../components/notifications/NotificationList'
 import { useNotifications } from '../hooks/useNotifications'
@@ -21,6 +29,7 @@ export default function StudentDashboard({ estudianteId, studentName, studentEma
   const previousStatusesRef = useRef(new Map())
 
   const stats = useMemo(() => buildStats(citas), [citas])
+  const recentNotifications = useMemo(() => notifications.slice(0, 6), [notifications])
 
   useEffect(() => {
     const previousStatuses = previousStatusesRef.current
@@ -52,44 +61,57 @@ export default function StudentDashboard({ estudianteId, studentName, studentEma
   }, [citas])
 
   return (
-    <div className="mt-6 relative">
-      <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_320px] gap-4 items-start">
-        <aside className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5">
-          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+    <div className="relative student-dashboard-shell h-full min-h-0">
+      <div className="student-dashboard-enter h-full min-h-0 rounded-2xl border border-site-border bg-site-surface p-3 md:p-4 lg:p-5 shadow-[0_12px_30px_rgba(10,10,10,0.05)] flex flex-col">
+        <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
             <div className="flex items-center gap-2 text-primary">
               <UserCircle2 size={18} />
-              <h2 className="text-base font-semibold">Panel del estudiante</h2>
+              <h2 className="text-base font-semibold tracking-tight">Dashboard del estudiante</h2>
             </div>
             <p className="text-sm text-site-text mt-2">{studentName || 'Estudiante'}</p>
             <p className="text-xs text-site-muted">{studentEmail || 'Sin correo'}</p>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 md:gap-3 w-full lg:w-auto">
             <MetricCard label="Total" value={stats.total} icon={ClipboardList} />
             <MetricCard label="Pendientes" value={stats.pendientes} icon={CalendarClock} className="text-amber-700" />
             <MetricCard label="Confirmadas" value={stats.confirmadas} icon={CircleCheckBig} className="text-green-700" />
             <MetricCard label="Rechazadas" value={stats.rechazadas} icon={CircleX} className="text-red-700" />
           </div>
+        </header>
 
-          {citasError && <p className="mt-3 text-xs text-red-600">{citasError}</p>}
-        </aside>
+        {citasError && <p className="mt-3 text-xs text-red-600">{citasError}</p>}
 
-        <section className="min-h-[420px] relative">
-          <StudentCalendar citas={citas} loading={citasLoading} onCancelCita={cancelCita} />
-        </section>
+        <div className="mt-3 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-3 items-stretch dashboard-main-grid flex-1 min-h-0">
+          <section className="min-h-0 relative student-dashboard-panel student-dashboard-panel-calendar">
+            <StudentCalendar citas={citas} loading={citasLoading} onCancelCita={cancelCita} />
+          </section>
 
-        <aside className="bg-site-surface border border-site-border rounded-xl p-4 md:p-5 h-full max-h-[740px] overflow-hidden">
-          <h3 className="text-base font-semibold text-site-text mb-3 inline-flex items-center gap-2">
-            <BellRing size={17} className="text-primary" /> Notificaciones
-          </h3>
-          <div className="h-[640px] overflow-y-auto pr-1">
-            <NotificationList
-              notifications={notifications}
-              loading={notificationsLoading}
-              error={notificationsError}
-            />
-          </div>
-        </aside>
+          <aside className="student-dashboard-panel rounded-xl border border-site-border bg-site-bg/60 p-3 md:p-4 overflow-hidden">
+            <h3 className="text-base font-semibold text-site-text mb-2 inline-flex items-center gap-2">
+              <BellRing size={17} className="text-primary" /> Notificaciones recientes
+            </h3>
+            <p className="text-xs text-site-muted mb-3">
+              Mostrando las 6 actualizaciones mas recientes para mantener el panel limpio.
+            </p>
+
+            <div className="max-h-[420px] overflow-y-auto pr-1">
+              <NotificationList
+                notifications={recentNotifications}
+                loading={notificationsLoading}
+                error={notificationsError}
+              />
+            </div>
+
+            {notifications.length > 6 && (
+              <p className="mt-3 text-xs text-site-muted inline-flex items-center gap-1">
+                Hay {notifications.length - 6} notificaciones adicionales
+                <ChevronRight size={12} className="text-primary" />
+              </p>
+            )}
+          </aside>
+        </div>
       </div>
 
       <div className="fixed top-4 right-4 z-50 space-y-2">
@@ -105,11 +127,11 @@ export default function StudentDashboard({ estudianteId, studentName, studentEma
 
 function MetricCard({ label, value, icon: Icon, className = '' }) {
   return (
-    <div className="bg-site-bg border border-site-border rounded-lg p-3">
+    <div className="bg-site-bg border border-site-border rounded-xl px-3 py-2.5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-primary/40">
       <p className="text-[11px] text-site-muted inline-flex items-center gap-1">
         {Icon && <Icon size={12} className="text-primary" />} {label}
       </p>
-      <p className={`text-xl font-semibold text-site-text ${className}`}>{value}</p>
+      <p className={`text-lg md:text-xl font-semibold text-site-text ${className}`}>{value}</p>
     </div>
   )
 }
