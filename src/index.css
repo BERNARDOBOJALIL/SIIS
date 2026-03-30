@@ -109,6 +109,30 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.room-label--dual {
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.room-label .label-text--dual {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.08;
+}
+
+.room-label .label-code {
+  display: block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  letter-spacing: 0.04em;
+}
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--label-accent); }
   50%      { opacity: 0.55; box-shadow: 0 0 10px var(--label-accent); }

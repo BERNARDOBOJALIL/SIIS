@@ -312,6 +312,49 @@ export function funnelPath(triPath, startPt, endPt, graph) {
   return pts
 }
 
+function simplifyPathPoints(points) {
+  if (!points || points.length === 0) return []
+
+  const dedup = [points[0].clone()]
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].distanceToSquared(dedup[dedup.length - 1]) <= 1e-6) continue
+    dedup.push(points[i].clone())
+  }
+
+  if (dedup.length <= 2) return dedup
+
+  const out = [dedup[0]]
+  const vA = new THREE.Vector3()
+  const vB = new THREE.Vector3()
+
+  for (let i = 1; i < dedup.length - 1; i++) {
+    const prev = out[out.length - 1]
+    const cur = dedup[i]
+    const next = dedup[i + 1]
+
+    vA.subVectors(cur, prev)
+    vB.subVectors(next, cur)
+    vA.y = 0
+    vB.y = 0
+
+    const lenA = vA.length()
+    const lenB = vB.length()
+    if (lenA < 0.03 || lenB < 0.03) continue
+
+    const invLen = 1 / (lenA * lenB)
+    const cross = Math.abs((vA.x * vB.z) - (vA.z * vB.x)) * invLen
+    const dot = ((vA.x * vB.x) + (vA.z * vB.z)) * invLen
+
+    /* Drop only tiny forward-direction bends to keep routes straighter. */
+    if (cross < 0.06 && dot > 0) continue
+
+    out.push(cur)
+  }
+
+  out.push(dedup[dedup.length - 1])
+  return out
+}
+
 /* ────────────────────────────────────────────
    5.  High-level: find smooth path between
        two world positions through nav mesh
@@ -329,12 +372,12 @@ export function findPath(from, to, graph) {
   const triRoute = astar(startTri, endTri, graph)
   if (!triRoute) return null
 
-  const funnel = funnelPath(triRoute, from, to, graph)
+  const funnel = simplifyPathPoints(funnelPath(triRoute, from, to, graph))
   if (funnel && funnel.length >= 2) return funnel
 
   /* Fallback: use triangle centroids as path */
   const pts = [from.clone()]
   for (const t of triRoute) pts.push(graph.centroids[t].clone())
   pts.push(to.clone())
-  return pts
+  return simplifyPathPoints(pts)
 }

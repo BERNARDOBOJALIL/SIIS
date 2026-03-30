@@ -1,17 +1,18 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { DRACOLoader }   from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
   Search, X, Layers, Building2, RotateCcw, Info, Navigation2, XCircle,
   MapPin, Crosshair, ArrowRight,
 } from 'lucide-react'
-import { buildNavGraph, findPath } from './navPathfinding'
+import { buildNavGraph, findPath, findTriangle } from './navPathfinding'
 
 const MODELS = [
-  { file: '/Ensamblaje2_PB.glb', nav: '/NAVMESH_PB_IDIT.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
-  { file: '/P1_ENSAMB_v2.glb',   nav: '/NAVMESH_P1_IDIT.glb', label: 'Planta 1',    short: 'P1', entryName: 'Sólido27-1', origin: [12.63, -1.60, 31.42] },
+  { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
+  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_P1_FINAL.glb', label: 'Planta 1',    short: 'P1', entryName: 'Sólido27-1', origin: [12.63, -1.60, 31.42] },
 ]
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
@@ -19,12 +20,25 @@ const C_SELECTED = new THREE.Color(0xcc0000)
 const C_FOUND    = new THREE.Color(0xff9500)
 
 const ANIM_HOVER   = 280
-const ANIM_CAM     = 2800
+const ANIM_CAM     = 1600
 const ANIM_LIFT    = 700
-const LIFT_DELAY   = 0.72
+const LIFT_DELAY   = 0.58
 const HOVER_LIFT   = 2.4
 const HOVER_OUT    = 1.3
+const SELECT_LIFT_MIN = 0.35
+const SELECT_LIFT_MAX = 1.2
+const SELECT_LIFT_FACTOR = 0.2
 const IDLE_TIMEOUT = 30000  // ms — inactividad para regresar a vista general
+const SELECT_CAM_PAD = 1.01
+const ROUTE_FRAME_MARGIN_FRAC = 1
+const ROUTE_FRAME_MARGIN_ABS = 1
+const ROUTE_FRAME_MIN_SPAN = 1
+const ROUTE_INDICATOR_COLOR = 0x00eaff
+const ROUTE_CLICK_Z_OFFSET = 20
+const RENDER_PIXEL_RATIO_MAX = 1.25
+const ENABLE_SHADOWS = false
+const LABEL_UPDATE_FPS = 24
+const POINTER_MOVE_INTERVAL_MS = 32
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -36,10 +50,34 @@ const STATUS_WEIGHTED = [
   'administrativo','mantenimiento','evento','sin_asignar',
 ]
 const MIN_LABEL_FRAC = 0.04
+const DRACO_DECODER_PATH = '/draco/'
 
 function meshStatus(name) {
   const h = [...name].reduce((a, c) => a + c.charCodeAt(0), 0)
   return STATUS_WEIGHTED[h % STATUS_WEIGHTED.length]
+}
+
+function formatEntryName(name) {
+  if (!name) return ''
+  const normalized = name
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (/bañ|bano|banos|bath/i.test(normalized)) {
+    return 'Baños'
+  }
+
+  const jCodes = [...normalized.matchAll(/[jJ][\s_-]?(\d{1,3})/g)]
+    .map(([, code]) => `J-${String(Number.parseInt(code, 10)).padStart(3, '0')}`)
+  const uniqueJCodes = [...new Set(jCodes)]
+  if (uniqueJCodes.length > 0) {
+    return uniqueJCodes.join(' / ')
+  }
+
+  return normalized
+    .replace(/\s*\/\s*/g, ' / ')
+    .trim()
 }
 
 function easeInOutCubic(t) { return t < 0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2 }
@@ -53,10 +91,13 @@ function toNDC(e, canvas) {
   return { nx:(cx/rect.width)*2-1, ny:-(cy/rect.height)*2+1, cx, cy }
 }
 
-function doRaycast(nx, ny, camera, objects) {
-  const rc = new THREE.Raycaster()
-  rc.setFromCamera(new THREE.Vector2(nx, ny), camera)
-  return rc.intersectObjects(objects, false)
+const _raycaster = new THREE.Raycaster()
+const _rayMouse  = new THREE.Vector2()
+
+function doRaycast(nx, ny, camera, objects, recursive = false) {
+  _rayMouse.set(nx, ny)
+  _raycaster.setFromCamera(_rayMouse, camera)
+  return _raycaster.intersectObjects(objects, recursive)
 }
 
 function getMeshColor(mesh) {
@@ -67,6 +108,269 @@ function getMeshColor(mesh) {
 function setMeshColor(mesh, color) {
   const apply = m => { if (m?.color) m.color.set(color) }
   Array.isArray(mesh.material) ? mesh.material.forEach(apply) : apply(mesh.material)
+}
+
+function setObjectColor(obj, color) {
+  obj.traverse(node => {
+    if (node.isMesh) setMeshColor(node, color)
+  })
+}
+
+function setEntryColor(entry, color) {
+  const targets = entry?.colorMeshes?.length
+    ? entry.colorMeshes
+    : (entry?.focusMeshes?.length
+      ? entry.focusMeshes
+      : entry?.meshes)
+  if (targets?.length) {
+    targets.forEach(m => setMeshColor(m, color))
+    return
+  }
+  if (entry?.mesh) setObjectColor(entry.mesh, color)
+}
+
+function getObjectColor(obj) {
+  let color = null
+  obj.traverse(node => {
+    if (color || !node.isMesh) return
+    color = getMeshColor(node)
+  })
+  return color ?? new THREE.Color(0xcccccc)
+}
+
+function countObjectMeshes(obj) {
+  let count = 0
+  obj.traverse(node => {
+    if (node.isMesh) count++
+  })
+  return count
+}
+
+function collectObjectMeshes(obj) {
+  const out = []
+  obj.traverse(node => {
+    if (node.isMesh) out.push(node)
+  })
+  return out
+}
+
+function getBoundsForMeshList(meshList) {
+  const bb = new THREE.Box3().makeEmpty()
+  meshList.forEach(m => bb.expandByObject(m))
+  return bb
+}
+
+function getWeightedCenterFromMeshes(meshList) {
+  if (!meshList || meshList.length === 0) return new THREE.Vector3()
+
+  let wSum = 0
+  let wx = 0, wy = 0, wz = 0
+  let minY = Infinity
+  let maxY = -Infinity
+
+  meshList.forEach(m => {
+    const bb = new THREE.Box3().setFromObject(m)
+    if (bb.isEmpty()) return
+    const sz = bb.getSize(new THREE.Vector3())
+    const cen = bb.getCenter(new THREE.Vector3())
+    const weight = Math.max(sz.x * sz.z, 0.0001)
+    wx += cen.x * weight
+    wy += cen.y * weight
+    wz += cen.z * weight
+    wSum += weight
+    minY = Math.min(minY, bb.min.y)
+    maxY = Math.max(maxY, bb.max.y)
+  })
+
+  if (wSum <= 0) return getBoundsForMeshList(meshList).getCenter(new THREE.Vector3())
+
+  const out = new THREE.Vector3(wx / wSum, wy / wSum, wz / wSum)
+  if (Number.isFinite(minY) && Number.isFinite(maxY)) {
+    out.y = (minY + maxY) * 0.5
+  }
+  return out
+}
+
+function getVisualCenterFromMeshes(meshList) {
+  if (!meshList || meshList.length === 0) return new THREE.Vector3()
+
+  let samples = 0
+  let sx = 0, sy = 0, sz = 0
+  const tmp = new THREE.Vector3()
+  const MAX_SAMPLES_PER_MESH = 5000
+
+  meshList.forEach(mesh => {
+    const pos = mesh.geometry?.attributes?.position
+    if (!pos || pos.count === 0) return
+    mesh.updateWorldMatrix(true, false)
+    const step = Math.max(1, Math.ceil(pos.count / MAX_SAMPLES_PER_MESH))
+    for (let i = 0; i < pos.count; i += step) {
+      tmp.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld)
+      sx += tmp.x
+      sy += tmp.y
+      sz += tmp.z
+      samples++
+    }
+  })
+
+  if (samples > 0) {
+    return new THREE.Vector3(sx / samples, sy / samples, sz / samples)
+  }
+
+  return getWeightedCenterFromMeshes(meshList)
+}
+
+function collectFrontierMeshes(root) {
+  const meshes = []
+  let minDepth = Infinity
+  const stack = [{ node: root, depth: 0 }]
+
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()
+    if (node.isMesh) {
+      if (depth < minDepth) {
+        minDepth = depth
+        meshes.length = 0
+        meshes.push(node)
+      } else if (depth === minDepth) {
+        meshes.push(node)
+      }
+      continue
+    }
+    node.children.forEach(child => stack.push({ node: child, depth: depth + 1 }))
+  }
+
+  return meshes
+}
+
+function getEntryMeshList(entry, mode = 'focus') {
+  if (!entry) return []
+  if (mode === 'full') {
+    if (entry.meshes?.length) return entry.meshes
+    return entry.mesh ? [entry.mesh] : []
+  }
+  if (entry.focusMeshes?.length) return entry.focusMeshes
+  if (entry.meshes?.length) return entry.meshes
+  return entry.mesh ? [entry.mesh] : []
+}
+
+function getEntryBounds(entry, mode = 'focus') {
+  const list = getEntryMeshList(entry, mode)
+  if (list.length > 0) return getBoundsForMeshList(list)
+  return new THREE.Box3().setFromObject(entry.mesh)
+}
+
+function getEntryWorldCenter(entry, mode = 'focus') {
+  if (mode === 'focus' && entry?.visualCenterLocal) {
+    return entry.mesh.localToWorld(entry.visualCenterLocal.clone())
+  }
+  const list = getEntryMeshList(entry, mode)
+  if (list.length > 0) return getWeightedCenterFromMeshes(list)
+  return getEntryBounds(entry, mode).getCenter(new THREE.Vector3())
+}
+
+function getLargestMeshByVolume(meshList) {
+  let best = null
+  let bestVolume = -1
+  meshList.forEach(m => {
+    const bb = new THREE.Box3().setFromObject(m)
+    const sz = bb.getSize(new THREE.Vector3())
+    const volume = sz.x * sz.y * sz.z
+    if (volume > bestVolume) {
+      bestVolume = volume
+      best = m
+    }
+  })
+  return best
+}
+
+const _labelAnchorRay = new THREE.Raycaster()
+
+function getEntryLabelAnchorWorld(entry) {
+  const bb = getEntryBounds(entry, 'focus')
+  if (bb.isEmpty()) return getEntryWorldCenter(entry)
+  const size = bb.getSize(new THREE.Vector3())
+  const center = getEntryWorldCenter(entry, 'focus')
+  const rayStartY = bb.max.y + Math.max(2, size.y * 2)
+  const maxSpan = Math.max(size.x, size.z, 0.5)
+  const radius = maxSpan * 0.22
+  const sampleOffsets = [
+    [0, 0],
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [0.72, 0.72], [0.72, -0.72], [-0.72, 0.72], [-0.72, -0.72],
+  ]
+
+  let bestHit = null
+  let bestD2 = Infinity
+  for (const [ox, oz] of sampleOffsets) {
+    const origin = new THREE.Vector3(
+      center.x + ox * radius,
+      rayStartY,
+      center.z + oz * radius,
+    )
+    _labelAnchorRay.set(origin, new THREE.Vector3(0, -1, 0))
+    const hits = _labelAnchorRay.intersectObjects(getEntryMeshList(entry, 'focus'), false)
+    if (hits.length === 0) continue
+    const h = hits[0]
+    const dx = h.point.x - center.x
+    const dz = h.point.z - center.z
+    const d2 = dx * dx + dz * dz
+    if (d2 < bestD2) {
+      bestD2 = d2
+      bestHit = h
+    }
+  }
+
+  if (bestHit) return bestHit.point.clone()
+
+  return new THREE.Vector3(
+    center.x,
+    bb.min.y + Math.min(0.4, Math.max(size.y * 0.1, 0.05)),
+    center.z,
+  )
+}
+
+function resolveInteractiveRoots(model) {
+  const meshChildren = node => node.children
+    .map(child => ({ child, meshCount: countObjectMeshes(child) }))
+    .filter(item => item.meshCount > 0)
+
+  let container = model
+  while (container.children.length === 1 && !container.children[0].isMesh) {
+    container = container.children[0]
+  }
+
+  const MAX_DESCENT = 10
+  for (let i = 0; i < MAX_DESCENT; i++) {
+    const layer = meshChildren(container)
+    if (layer.length === 0) break
+    if (layer.length === 1) {
+      container = layer[0].child
+      continue
+    }
+
+    /* If one branch is overwhelmingly dominant (e.g., real model + tiny helper),
+       descend into it so we don't keep a wrapper level as interactive root. */
+    const total = layer.reduce((acc, it) => acc + it.meshCount, 0)
+    const sorted = [...layer].sort((a, b) => b.meshCount - a.meshCount)
+    const first = sorted[0]
+    const second = sorted[1]
+    const dominant = total > 0
+      && (first.meshCount / total) >= 0.85
+      && (!second || (second.meshCount / total) <= 0.15)
+
+    if (dominant) {
+      container = first.child
+      continue
+    }
+
+    return layer.map(it => it.child)
+  }
+
+  const finalLayer = meshChildren(container)
+  if (finalLayer.length > 0) return finalLayer.map(it => it.child)
+  if (countObjectMeshes(container) > 0) return [container]
+  return []
 }
 
 function disposeObj(obj) {
@@ -96,8 +400,179 @@ function fitCamera(bbox, camera, elevDeg, padMult, azimuthRad = 0) {
   return { pos, target: sphere.center.clone() }
 }
 
+function fitCameraTopDown(bbox, camera, padMult = 1.08) {
+  const size = bbox.getSize(new THREE.Vector3())
+  const center = bbox.getCenter(new THREE.Vector3())
+  const fovHalf  = THREE.MathUtils.degToRad(camera.fov / 2)
+  const hFovHalf = Math.atan(Math.tan(fovHalf) * camera.aspect)
+  const distX = (size.x * 0.5) / Math.tan(hFovHalf)
+  const distZ = (size.z * 0.5) / Math.tan(fovHalf)
+  const dist = Math.max(distX, distZ, 1.2) * padMult
+  return {
+    pos: new THREE.Vector3(center.x, center.y + dist, center.z),
+    target: center.clone(),
+  }
+}
+
+function topDownFitDistanceForBBox(bbox, camera, padMult = 1.0) {
+  const size = bbox.getSize(new THREE.Vector3())
+  const fovHalf  = THREE.MathUtils.degToRad(camera.fov / 2)
+  const hFovHalf = Math.atan(Math.tan(fovHalf) * camera.aspect)
+  const distX = (size.x * 0.5) / Math.tan(hFovHalf)
+  const distZ = (size.z * 0.5) / Math.tan(fovHalf)
+  return Math.max(distX, distZ, 0.8) * padMult
+}
+
+function getEntryFrameFromSolids(entry, focusPoint = null) {
+  const meshes = getEntryMeshList(entry, 'full')
+  if (!meshes || meshes.length === 0) {
+    const bbox = getEntryBounds(entry, 'full')
+    const center = bbox.getCenter(new THREE.Vector3())
+    return {
+      bbox,
+      center,
+      maxY: bbox.max.y,
+    }
+  }
+
+  const solids = []
+
+  meshes.forEach(mesh => {
+    const bb = new THREE.Box3().setFromObject(mesh)
+    if (bb.isEmpty()) return
+    const size = bb.getSize(new THREE.Vector3())
+    const center = bb.getCenter(new THREE.Vector3())
+    solids.push({
+      center,
+      minX: bb.min.x,
+      maxX: bb.max.x,
+      minZ: bb.min.z,
+      maxZ: bb.max.z,
+      minY: bb.min.y,
+      maxY: bb.max.y,
+      weight: Math.max(size.x * size.z, 0.0001),
+    })
+  })
+
+  if (solids.length === 0) {
+    const bbox = getEntryBounds(entry, 'full')
+    const center = bbox.getCenter(new THREE.Vector3())
+    return {
+      bbox,
+      center,
+      maxY: bbox.max.y,
+    }
+  }
+
+  let frameSolids = solids
+  if (focusPoint && solids.length > 4) {
+    const ranked = solids
+      .map(s => ({
+        ...s,
+        dist: Math.hypot(s.center.x - focusPoint.x, s.center.z - focusPoint.z),
+      }))
+      .sort((a, b) => a.dist - b.dist)
+
+    const qIdx = Math.max(0, Math.floor((ranked.length - 1) * 0.75))
+    const qDist = ranked[qIdx].dist
+    const dynamicRadius = Math.max(6, qDist + Math.max(3, qDist * 0.6))
+    const nearby = ranked.filter(s => s.dist <= dynamicRadius)
+    frameSolids = nearby.length > 0 ? nearby : [ranked[0]]
+  }
+
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+
+  frameSolids.forEach(s => {
+    minX = Math.min(minX, s.minX)
+    maxX = Math.max(maxX, s.maxX)
+    minZ = Math.min(minZ, s.minZ)
+    maxZ = Math.max(maxZ, s.maxZ)
+    minY = Math.min(minY, s.minY)
+    maxY = Math.max(maxY, s.maxY)
+  })
+
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minZ) || !Number.isFinite(maxZ)) {
+    const bbox = getEntryBounds(entry, 'full')
+    const center = bbox.getCenter(new THREE.Vector3())
+    return {
+      bbox,
+      center,
+      maxY: bbox.max.y,
+    }
+  }
+
+  if ((maxX - minX) < 0.8) {
+    const cx = (minX + maxX) * 0.5
+    minX = cx - 0.4
+    maxX = cx + 0.4
+  }
+  if ((maxZ - minZ) < 0.8) {
+    const cz = (minZ + maxZ) * 0.5
+    minZ = cz - 0.4
+    maxZ = cz + 0.4
+  }
+
+  const y0 = Number.isFinite(minY) ? minY : 0
+  const y1 = Number.isFinite(maxY) ? maxY : 0
+
+  const bbox = new THREE.Box3(
+    new THREE.Vector3(minX, y0, minZ),
+    new THREE.Vector3(maxX, y1, maxZ),
+  )
+
+  const center = bbox.getCenter(new THREE.Vector3())
+
+  return {
+    bbox,
+    center,
+    maxY: y1,
+  }
+}
+
+function fitEntryCameraTopDown(entry, camera, padMult = 1.02, focusPoint = null) {
+  const frame = getEntryFrameFromSolids(entry, focusPoint)
+  const dist = topDownFitDistanceForBBox(frame.bbox, camera, padMult)
+  return {
+    bbox: frame.bbox,
+    pos: new THREE.Vector3(frame.center.x, frame.maxY + dist, frame.center.z),
+    target: frame.center.clone(),
+  }
+}
+
+function fitRouteCameraTopDown(points, camera, padMult = 1.0) {
+  if (!points || points.length === 0) return null
+  const bb = new THREE.Box3()
+  points.forEach(p => bb.expandByPoint(p))
+  if (bb.isEmpty()) return null
+
+  const center = bb.getCenter(new THREE.Vector3())
+  const size = bb.getSize(new THREE.Vector3())
+  const marginX = Math.max(ROUTE_FRAME_MARGIN_ABS, size.x * ROUTE_FRAME_MARGIN_FRAC)
+  const marginZ = Math.max(ROUTE_FRAME_MARGIN_ABS, size.z * ROUTE_FRAME_MARGIN_FRAC)
+  const halfX = Math.max(
+    (size.x * 0.5) + marginX,
+    ROUTE_FRAME_MIN_SPAN * 0.5,
+  )
+  const halfZ = Math.max(
+    (size.z * 0.5) + marginZ,
+    ROUTE_FRAME_MIN_SPAN * 0.5,
+  )
+  bb.min.x = center.x - halfX
+  bb.max.x = center.x + halfX
+  bb.min.z = center.z - halfZ
+  bb.max.z = center.z + halfZ
+
+  return fitCameraTopDown(bb, camera, padMult)
+}
+
 export default function ThreeViewer() {
   const mountRef = useRef(null)
+  const dracoLoaderRef = useRef(null)
 
   const R = useRef({
     renderer: null, scene: null, camera: null,
@@ -108,6 +583,9 @@ export default function ThreeViewer() {
   })
 
   const meshes      = useRef([])
+  const pickablesRef = useRef([])
+  const focusPickablesRef = useRef([])
+  const pickableToEntryRef = useRef(new Map())
   const animMap     = useRef(new Map())
   const hoverRef    = useRef(null)
   const selectedRef = useRef(null)
@@ -124,6 +602,8 @@ export default function ThreeViewer() {
   const handlersRef = useRef({ onPointerMove: null, onClick: null, onLabelClick: null })
   const idleTimerRef = useRef(null)   // timeout de inactividad 30s
   const labelsDataRef = useRef([])
+  const tooltipRef = useRef({ visible:false, name:'', x:0, y:0 })
+  const lastPointerMoveRef = useRef(0)
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -142,7 +622,8 @@ export default function ThreeViewer() {
   const navMarkersRef = useRef([])       // origin/dest marker meshes
   const navOriginPt  = useRef(null)      // THREE.Vector3 — clicked origin (building space)
   const navDestPt    = useRef(null)      // THREE.Vector3 — clicked dest (building space)
-  const navOffsetRef = useRef(new THREE.Vector3()) // navCen - buildingCen
+  const navOffsetRef = useRef(new THREE.Vector3()) // scene->nav offset (added before pathfinding)
+  const modelCenterRef = useRef(new THREE.Vector3())
   const [navMode,      setNavMode]      = useState(false)   // navigation panel open
   const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
   const [navDest,      setNavDest]       = useState(null)    // display label for dest
@@ -169,24 +650,34 @@ export default function ThreeViewer() {
     }
   }
 
-  /** Show only the label for `name`; hide all others */
-  function showOnlyLabel(name) {
+  /** Show only the label for `key`; hide all others */
+  function showOnlyLabel(key) {
     const el = R.current.labelsOverlay
     if (!el) return
     el.style.opacity = '1'
     labelsDataRef.current.forEach(lbl => {
-      lbl._hidden = lbl.name !== name
+      lbl._hidden = lbl.key !== key
     })
   }
 
-  /** Show only labels whose names are in `names` set; hide the rest */
-  function showOnlyLabels(names) {
+  /** Show only labels whose keys are in `keys` set; hide the rest */
+  function showOnlyLabels(keys) {
     const el = R.current.labelsOverlay
     if (!el) return
     el.style.opacity = '1'
     labelsDataRef.current.forEach(lbl => {
-      lbl._hidden = !names.has(lbl.name)
+      lbl._hidden = !keys.has(lbl.key)
     })
+  }
+
+  function commitTooltip(next) {
+    const prev = tooltipRef.current
+    const changedIdentity = prev.visible !== next.visible || prev.name !== next.name
+    const movedEnough = Math.abs(next.x - prev.x) > 10 || Math.abs(next.y - prev.y) > 10
+    tooltipRef.current = next
+    if (changedIdentity || (next.visible && movedEnough)) {
+      setTooltip(next)
+    }
   }
 
   function startMeshAnim(entry, toLocalPos, duration, easing) {
@@ -229,33 +720,36 @@ export default function ThreeViewer() {
     }
   }
 
+  function toParentLocalDelta(entry, worldPoint, worldDelta) {
+    if (!entry.mesh.parent) return worldDelta.clone()
+    const fromLocal = entry.mesh.parent.worldToLocal(worldPoint.clone())
+    const toLocal   = entry.mesh.parent.worldToLocal(worldPoint.clone().add(worldDelta))
+    return toLocal.sub(fromLocal)
+  }
+
   function hoverLocalTarget(entry) {
-    const ow = entry.origWorldPos
-    const outDir = new THREE.Vector3(ow.x, 0, ow.z)
+    const center = entry.origWorldPos
+    const outDir = new THREE.Vector3(center.x, 0, center.z)
     const len = outDir.length()
     if (len > 0.01) outDir.divideScalar(len)
     else outDir.set(0, 0, 1)
-    const targetWorld = ow.clone()
-      .addScaledVector(outDir, HOVER_OUT)
+    const deltaWorld = outDir.clone().multiplyScalar(HOVER_OUT)
       .add(new THREE.Vector3(0, HOVER_LIFT, 0))
-    if (entry.mesh.parent)
-      return entry.mesh.parent.worldToLocal(targetWorld.clone())
-    return targetWorld
+    const localDelta = toParentLocalDelta(entry, center, deltaWorld)
+    return entry.origPos.clone().add(localDelta)
   }
 
   function liftLocalTarget(entry, extraHeight) {
-    const wp = new THREE.Vector3()
-    entry.mesh.getWorldPosition(wp)
-    const targetWorld = wp.clone().add(new THREE.Vector3(0, extraHeight, 0))
-    if (entry.mesh.parent)
-      return entry.mesh.parent.worldToLocal(targetWorld.clone())
-    return targetWorld
+    const center = getEntryWorldCenter(entry)
+    const deltaWorld = new THREE.Vector3(0, extraHeight, 0)
+    const localDelta = toParentLocalDelta(entry, center, deltaWorld)
+    return entry.mesh.position.clone().add(localDelta)
   }
 
   function deselectEntry(entry) {
     clearTimeout(entry._liftTimer)
     entry._liftTimer = null
-    setMeshColor(entry.mesh, entry.origColor)
+    setEntryColor(entry, entry.origColor)
     startMeshAnim(entry, entry.origPos, ANIM_LIFT, easeInOutQuart)
     selectedRef.current = null
     setSelectedName(null)
@@ -273,6 +767,10 @@ export default function ThreeViewer() {
   /** Reinicia el timer de inactividad (30s). Cualquier interacción lo resetea. */
   function resetIdleTimer() {
     clearTimeout(idleTimerRef.current)
+    if (navMode || navActive) {
+      idleTimerRef.current = null
+      return
+    }
     idleTimerRef.current = setTimeout(() => {
       /* Solo regresar si no hay pieza seleccionada */
       if (!selectedRef.current) {
@@ -306,7 +804,7 @@ export default function ThreeViewer() {
       scene?.remove(navDotRef.current)
       navDotRef.current = null
     }
-    navAnimRef.current = { active: false, t: 0, pathLen: 0, points: [] }
+    navAnimRef.current = { active: false, t: 0, pathLen: 0, polylinePoints: [] }
   }
 
   function clearNavMarkers() {
@@ -456,37 +954,14 @@ export default function ThreeViewer() {
     startCamAnim(R.current.defaultPos, R.current.defaultTarget)
   }
 
-  /** Convert raw waypoints into Manhattan-style path (only axis-aligned segments, 90° turns). */
-  function manhattanize(pts) {
-    if (pts.length < 2) return pts
+  function dedupePolylinePoints(pts, minDistSq = 0.0001) {
+    if (!pts || pts.length === 0) return []
     const out = [pts[0].clone()]
     for (let i = 1; i < pts.length; i++) {
-      const prev = out[out.length - 1]
-      const cur  = pts[i]
-      const dx = cur.x - prev.x
-      const dz = cur.z - prev.z
-      /* Move along the longer axis first, then the shorter one */
-      if (Math.abs(dx) >= Math.abs(dz)) {
-        const mid = new THREE.Vector3(cur.x, prev.y, prev.z)
-        if (Math.abs(dx) > 0.01) out.push(mid)
-        if (Math.abs(dz) > 0.01) out.push(new THREE.Vector3(cur.x, cur.y, cur.z))
-        else if (Math.abs(dx) > 0.01) { /* already at dest Z */ }
-        else out.push(cur.clone())
-      } else {
-        const mid = new THREE.Vector3(prev.x, prev.y, cur.z)
-        if (Math.abs(dz) > 0.01) out.push(mid)
-        if (Math.abs(dx) > 0.01) out.push(new THREE.Vector3(cur.x, cur.y, cur.z))
-        else if (Math.abs(dz) > 0.01) { /* already at dest X */ }
-        else out.push(cur.clone())
-      }
+      if (pts[i].distanceToSquared(out[out.length - 1]) <= minDistSq) continue
+      out.push(pts[i].clone())
     }
-    /* Deduplicate consecutive identical points */
-    const clean = [out[0]]
-    for (let i = 1; i < out.length; i++) {
-      if (out[i].distanceToSquared(clean[clean.length - 1]) > 0.0001)
-        clean.push(out[i])
-    }
-    return clean
+    return out
   }
 
   /** Compute cumulative distances along a polyline and total length */
@@ -513,66 +988,129 @@ export default function ThreeViewer() {
     return pts[pts.length - 1].clone()
   }
 
+  function sceneToNavPoint(point) {
+    return point.clone().add(navOffsetRef.current)
+  }
+
+  function navToScenePoint(point) {
+    return point.clone().sub(navOffsetRef.current)
+  }
+
+  function nearestReachableNavPoint(from, to, graph) {
+    const startTri = findTriangle(from, graph)
+    if (startTri == null || startTri < 0) return null
+
+    const triCount = graph.triCount ?? graph.centroids.length
+    const visited = new Uint8Array(triCount)
+    const queue = [startTri]
+    let qHead = 0
+    visited[startTri] = 1
+
+    let bestTri = startTri
+    let bestD2 = Infinity
+
+    while (qHead < queue.length) {
+      const tri = queue[qHead++]
+      const c = graph.centroids[tri]
+      const dx = c.x - to.x
+      const dz = c.z - to.z
+      const d2 = dx * dx + dz * dz
+      if (d2 < bestD2) {
+        bestD2 = d2
+        bestTri = tri
+      }
+
+      const nbs = graph.adj[tri] || []
+      for (const nb of nbs) {
+        if (visited[nb]) continue
+        visited[nb] = 1
+        queue.push(nb)
+      }
+    }
+
+    if (bestTri == null) return null
+    const p = graph.centroids[bestTri].clone()
+    p.y = to.y
+    return p
+  }
+
   function buildRoute() {
     const graph = navGraphRef.current
-    const from = navOriginPt.current
-    const to   = navDestPt.current
-    if (!graph || !from || !to) return
+    const fromScene = navOriginPt.current
+    const toScene   = navDestPt.current
+    if (!graph || !fromScene || !toScene) return
 
     clearRouteVisuals()
     if (selectedRef.current) deselectEntry(selectedRef.current)
 
-    const waypoints = findPath(from.clone(), to.clone(), graph)
-    if (!waypoints || waypoints.length < 2) {
+    const fromNav = sceneToNavPoint(fromScene)
+    const toNav = sceneToNavPoint(toScene)
+
+    let routeTargetNav = toNav.clone()
+    let waypointsNav = findPath(fromNav.clone(), routeTargetNav.clone(), graph)
+    if (!waypointsNav || waypointsNav.length < 2) {
+      const fallback = nearestReachableNavPoint(fromNav, toNav, graph)
+      if (fallback) {
+        routeTargetNav = fallback
+        waypointsNav = findPath(fromNav.clone(), routeTargetNav.clone(), graph)
+        if (waypointsNav && waypointsNav.length >= 2) {
+          const fallbackScene = navToScenePoint(routeTargetNav)
+          navDestPt.current = fallbackScene.clone()
+          while (navMarkersRef.current.length > 1) {
+            const old = navMarkersRef.current.pop()
+            old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+            R.current.scene?.remove(old)
+          }
+          addNavMarker(fallbackScene, 0xff3333, 'dest')
+        }
+      }
+    }
+    if (!waypointsNav || waypointsNav.length < 2) {
       return
     }
 
+    const routeTargetScene = navToScenePoint(routeTargetNav)
+    const waypoints = waypointsNav.map(p => navToScenePoint(p.clone()))
+
     /* Flatten Y to the building floor level */
-    const floorY = Math.min(from.y, to.y) + 0.15
+    const floorY = Math.min(fromScene.y, routeTargetScene.y) + 0.15
     waypoints.forEach(p => { p.y = floorY })
 
-    /* Convert to Manhattan-style (right-angle only) path */
-    const orthoPoints = manhattanize(waypoints)
+    const routePoints = dedupePolylinePoints(waypoints)
+    if (routePoints.length < 2) return
 
-    const { dists, total: pathLen } = polylineDistances(orthoPoints)
+    const { dists, total: pathLen } = polylineDistances(routePoints)
 
     /* ── Route group ── */
     const routeGroup = new THREE.Group()
     routeGroup.renderOrder = 999
 
     /* ── Outer glow (wide flat segments) ── */
-    for (let i = 1; i < orthoPoints.length; i++) {
-      const a = orthoPoints[i - 1], b = orthoPoints[i]
+    const segmentForward = new THREE.Vector3(0, 0, 1)
+    for (let i = 1; i < routePoints.length; i++) {
+      const a = routePoints[i - 1], b = routePoints[i]
       const dir = new THREE.Vector3().subVectors(b, a)
       const len = dir.length()
       if (len < 0.01) continue
       dir.normalize()
       const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5)
-      const geo = new THREE.BoxGeometry(
-        Math.abs(b.x - a.x) < 0.01 ? 1.2 : len,    // width
-        0.06,                                          // height (flat)
-        Math.abs(b.z - a.z) < 0.01 ? 1.2 : len,     // depth
-      )
-      /* For X-aligned segments: width=len, depth=thickness.
-         For Z-aligned segments: depth=len, width=thickness. */
-      const isXAligned = Math.abs(b.z - a.z) < 0.01
-      const geoCorr = new THREE.BoxGeometry(
-        isXAligned ? len  : 1.2,
-        0.06,
-        isXAligned ? 1.2  : len,
-      )
       const mat = new THREE.MeshBasicMaterial({
         color: 0xff2200, transparent: true, opacity: 0.22,
         depthTest: false, side: THREE.DoubleSide,
       })
-      const box = new THREE.Mesh(geoCorr, mat)
+      const box = new THREE.Mesh(new THREE.BoxGeometry(
+        1.2,
+        0.06,
+        len,
+      ), mat)
       box.position.copy(mid)
+      box.quaternion.setFromUnitVectors(segmentForward, dir)
       box.renderOrder = 998
       routeGroup.add(box)
     }
 
     /* ── Core line (bright, solid) ── */
-    const coreGeo = new THREE.BufferGeometry().setFromPoints(orthoPoints)
+    const coreGeo = new THREE.BufferGeometry().setFromPoints(routePoints)
     const coreMat = new THREE.LineBasicMaterial({
       color: 0xff0000, linewidth: 2, depthTest: false,
     })
@@ -581,7 +1119,7 @@ export default function ThreeViewer() {
     routeGroup.add(coreLine)
 
     /* ── Animated dashed line overlay ── */
-    const dashGeo = new THREE.BufferGeometry().setFromPoints(orthoPoints)
+    const dashGeo = new THREE.BufferGeometry().setFromPoints(routePoints)
     const dashMat = new THREE.LineDashedMaterial({
       color: 0xffffff, transparent: true, opacity: 0.7,
       dashSize: 1.0, gapSize: 0.6, depthTest: false,
@@ -591,43 +1129,61 @@ export default function ThreeViewer() {
     dashLine.renderOrder = 1000
     routeGroup.add(dashLine)
 
-    /* ── Turn markers (small squares at each corner) ── */
-    for (let i = 1; i < orthoPoints.length - 1; i++) {
-      const sq = new THREE.Mesh(
-        new THREE.BoxGeometry(0.6, 0.12, 0.6),
-        new THREE.MeshBasicMaterial({ color: 0xff4444, depthTest: false }),
-      )
-      sq.position.copy(orthoPoints[i])
-      sq.renderOrder = 1000
-      routeGroup.add(sq)
-    }
-
     R.current.scene.add(routeGroup)
     navLineRef.current = routeGroup
 
     /* ── Animated arrow dot (cone + sphere + glow) ── */
     const dotGroup = new THREE.Group()
     const innerSphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 20, 14),
-      new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }),
+      new THREE.SphereGeometry(0.7, 20, 14),
+      new THREE.MeshBasicMaterial({
+        color: ROUTE_INDICATOR_COLOR,
+        depthTest: false,
+        depthWrite: false,
+      }),
     )
-    innerSphere.renderOrder = 1002
+    innerSphere.renderOrder = 1003
     dotGroup.add(innerSphere)
+
     const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(0.38, 1.0, 12),
-      new THREE.MeshBasicMaterial({ color: 0xff0000, depthTest: false }),
+      new THREE.ConeGeometry(0.52, 1.45, 18),
+      new THREE.MeshBasicMaterial({
+        color: ROUTE_INDICATOR_COLOR,
+        depthTest: false,
+        depthWrite: false,
+      }),
     )
     cone.rotation.x = Math.PI / 2
-    cone.position.z = 0.75
-    cone.renderOrder = 1002
+    cone.position.z = 0.95
+    cone.renderOrder = 1003
     dotGroup.add(cone)
+
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.95, 0.14, 16, 28),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    )
+    halo.rotation.x = Math.PI / 2
+    halo.renderOrder = 1002
+    dotGroup.add(halo)
+
     const outerGlow = new THREE.Mesh(
-      new THREE.SphereGeometry(1.3, 20, 14),
-      new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.3, depthTest: false }),
+      new THREE.SphereGeometry(1.65, 20, 14),
+      new THREE.MeshBasicMaterial({
+        color: ROUTE_INDICATOR_COLOR,
+        depthTest: false,
+        depthWrite: false,
+      }),
     )
     outerGlow.renderOrder = 1001
     dotGroup.add(outerGlow)
-    dotGroup.position.copy(orthoPoints[0])
+
+    dotGroup.position.copy(routePoints[0])
+    dotGroup.userData.outerGlow = outerGlow
+    dotGroup.userData.halo = halo
     R.current.scene.add(dotGroup)
     navDotRef.current = dotGroup
 
@@ -635,25 +1191,20 @@ export default function ThreeViewer() {
     navAnimRef.current = {
       active: true, t: 0,
       pathLen,
-      orthoPoints, dists, dashMat,
-      points: orthoPoints,
+      polylinePoints: routePoints,
+      dists,
+      dashMat,
+      points: routePoints,
     }
 
-    /* Frame camera — perpendicular top-down view.
-       Merge route BB with building model BB so the model stays
-       centred and the route is fully visible at maximum zoom. */
-    const routeBB = new THREE.Box3()
-    orthoPoints.forEach(p => routeBB.expandByPoint(p))
-    if (from) routeBB.expandByPoint(from)
-    if (to)   routeBB.expandByPoint(to)
-    /* Include all building meshes so the model is always centred */
-    meshes.current.forEach(m => {
-      const mb = new THREE.Box3().setFromObject(m.mesh)
-      routeBB.union(mb)
-    })
-    routeBB.expandByScalar(2)
-    const { pos, target } = fitCamera(routeBB, R.current.camera, 90, 1.15)
-    startCamAnim(pos, target)
+    /* Frame camera to route extents only for maximum readable route zoom. */
+    const framePoints = [...routePoints]
+    framePoints.push(fromScene.clone())
+    framePoints.push((navDestPt.current ?? routeTargetScene).clone())
+    const routeFrame = fitRouteCameraTopDown(framePoints, R.current.camera, 1.0)
+    if (routeFrame) {
+      startCamAnim(routeFrame.pos, routeFrame.target)
+    }
     setNavActive(true)
   }
 
@@ -673,18 +1224,18 @@ export default function ThreeViewer() {
     setNavMode(true)
   }
 
-  handlersRef.current.onLabelClick = function(entryName) {
+  handlersRef.current.onLabelClick = function(entryKey) {
     const { camera, defaultPos, defaultTarget } = R.current
     if (!camera || meshes.current.length === 0) return
-    const entry = meshes.current.find(m => m.name === entryName)
+    const entry = meshes.current.find(m => m.key === entryKey)
     if (!entry) return
 
     if (navMode) {
       /* Navigate to this piece */
-      const bb = new THREE.Box3().setFromObject(entry.mesh)
-      const center = bb.getCenter(new THREE.Vector3())
+      const center = getEntryWorldCenter(entry, 'full')
       const pt = center.clone()
-      pt.z += 20.0  // nav mesh coordinate alignment
+      pt.z += ROUTE_CLICK_Z_OFFSET
+
       navDestPt.current = pt
       setNavDest(entry.name)
       clearRouteVisuals()
@@ -695,13 +1246,12 @@ export default function ThreeViewer() {
       }
       addNavMarker(pt, 0xff3333, 'dest')
       const NEIGHBOR_DIST = 8
-      const visibleNames = new Set([entry.name])
+      const visibleKeys = new Set([entry.key])
       meshes.current.forEach(m => {
-        const wp = new THREE.Vector3()
-        m.mesh.getWorldPosition(wp)
-        if (wp.distanceTo(center) < NEIGHBOR_DIST) visibleNames.add(m.name)
+        const wp = getEntryWorldCenter(m)
+        if (wp.distanceTo(center) < NEIGHBOR_DIST) visibleKeys.add(m.key)
       })
-      showOnlyLabels(visibleNames)
+      showOnlyLabels(visibleKeys)
       buildRoute()
       return
     }
@@ -714,18 +1264,18 @@ export default function ThreeViewer() {
       return
     }
     if (prev) deselectEntry(prev)
-    setMeshColor(entry.mesh, C_SELECTED)
+    setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
-    setSelectedStatus(meshStatus(entry.name))
-    showOnlyLabel(entry.name)
-    const bbox = new THREE.Box3().setFromObject(entry.mesh)
-    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 90, 1.45)
+    setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
+    showOnlyLabel(entry.key)
+    const focusPoint = getEntryWorldCenter(entry, 'focus')
+    const { bbox, pos: camPos, target: camTarget } = fitEntryCameraTopDown(entry, camera, SELECT_CAM_PAD, focusPoint)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
     const pieceSize = bbox.getSize(new THREE.Vector3())
     const maxSz = Math.max(pieceSize.x, pieceSize.y, pieceSize.z, 0.5)
-    const liftHeight = Math.max(maxSz * 0.85, 2.2)
+    const liftHeight = Math.min(SELECT_LIFT_MAX, Math.max(maxSz * SELECT_LIFT_FACTOR, SELECT_LIFT_MIN))
     entry._liftTimer = setTimeout(() => {
       if (selectedRef.current === entry)
         startMeshAnim(entry, liftLocalTarget(entry, liftHeight), ANIM_LIFT, easeInOutQuart)
@@ -735,26 +1285,32 @@ export default function ThreeViewer() {
   handlersRef.current.onPointerMove = function(e) {
     const { camera, renderer } = R.current
     if (!camera || !renderer || meshes.current.length === 0) return
+    const now = performance.now()
+    if (now - lastPointerMoveRef.current < POINTER_MOVE_INTERVAL_MS) return
+    lastPointerMoveRef.current = now
     resetIdleTimer()   // cualquier movimiento reinicia el timer de 30s
     const { nx, ny, cx, cy } = toNDC(e, renderer.domElement)
-    const hits     = doRaycast(nx, ny, camera, meshes.current.map(m => m.mesh))
+    const rayTargets = focusPickablesRef.current.length > 0
+      ? focusPickablesRef.current
+      : pickablesRef.current
+    const hits     = doRaycast(nx, ny, camera, rayTargets)
     const prev     = hoverRef.current
     const hitEntry = hits.length > 0
-      ? meshes.current.find(m => m.mesh === hits[0].object)
+      ? pickableToEntryRef.current.get(hits[0].object.uuid) ?? null
       : null
     if (hitEntry !== prev) {
       if (prev && prev !== selectedRef.current) {
-        setMeshColor(prev.mesh, prev.origColor)
+        setEntryColor(prev, prev.origColor)
         startMeshAnim(prev, prev.origPos)
       }
       if (hitEntry && hitEntry !== selectedRef.current) {
-        setMeshColor(hitEntry.mesh, C_HOVER)
+        setEntryColor(hitEntry, C_HOVER)
         startMeshAnim(hitEntry, hoverLocalTarget(hitEntry))
       }
       hoverRef.current = hitEntry
       renderer.domElement.style.cursor = hitEntry ? 'pointer' : 'default'
     }
-    setTooltip(hitEntry
+    commitTooltip(hitEntry
       ? { visible:true,  name:hitEntry.name, x:cx, y:cy }
       : { visible:false, name:'',            x:cx, y:cy }
     )
@@ -764,19 +1320,20 @@ export default function ThreeViewer() {
     const { camera, renderer, defaultPos, defaultTarget } = R.current
     if (!camera || !renderer || meshes.current.length === 0) return
     const { nx, ny } = toNDC(e, renderer.domElement)
-    const hits = doRaycast(nx, ny, camera, meshes.current.map(m => m.mesh))
+    const rayTargets = navMode
+      ? pickablesRef.current
+      : (focusPickablesRef.current.length > 0 ? focusPickablesRef.current : pickablesRef.current)
+    const hits = doRaycast(nx, ny, camera, rayTargets)
 
     /* ── Navigation mode: click places origin / dest ── */
     if (navMode) {
       if (hits.length === 0) return
-      const entry = meshes.current.find(m => m.mesh === hits[0].object)
+      const entry = pickableToEntryRef.current.get(hits[0].object.uuid) ?? null
       const label = entry ? entry.name : 'punto'
-      /* Use the building surface hit directly — the nav graph XZ
-         matches building-centered XZ within ~2% (both independently
-         centered).  The building hit Y is what we need so the route
-         renders ON the floor, not 4 units above it (the old bug). */
+      /* Use building surface hit; conversion to nav coordinates is handled
+        in buildRoute using the computed scene->nav offset. */
       const pt = hits[0].point.clone()
-      pt.z += 20.0  // offset — nav mesh coordinate alignment
+      pt.z += ROUTE_CLICK_Z_OFFSET
 
       /* Origin is always fixed (set in enterNavMode), click only sets dest */
       navDestPt.current = pt
@@ -792,13 +1349,12 @@ export default function ThreeViewer() {
       /* Show labels for dest + contiguous solids so user can orient */
       const NEIGHBOR_DIST = 8  // max distance to consider "contiguous"
       const destWorld = hits[0].point.clone()
-      const visibleNames = new Set([label])
+      const visibleKeys = new Set(entry ? [entry.key] : [])
       meshes.current.forEach(m => {
-        const wp = new THREE.Vector3()
-        m.mesh.getWorldPosition(wp)
-        if (wp.distanceTo(destWorld) < NEIGHBOR_DIST) visibleNames.add(m.name)
+        const wp = getEntryWorldCenter(m)
+        if (wp.distanceTo(destWorld) < NEIGHBOR_DIST) visibleKeys.add(m.key)
       })
-      showOnlyLabels(visibleNames)
+      showOnlyLabels(visibleKeys)
       buildRoute()
       return
     }
@@ -817,7 +1373,7 @@ export default function ThreeViewer() {
       resetIdleTimer()
       return
     }
-    const entry = meshes.current.find(m => m.mesh === hits[0].object)
+    const entry = pickableToEntryRef.current.get(hits[0].object.uuid) ?? null
     if (!entry) return
     if (prev === entry) {
       deselectEntry(entry)
@@ -825,19 +1381,19 @@ export default function ThreeViewer() {
       return
     }
     if (prev) deselectEntry(prev)
-    setMeshColor(entry.mesh, C_SELECTED)
+    setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
-    setSelectedStatus(meshStatus(entry.name))
-    showOnlyLabel(entry.name)
+    setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
+    showOnlyLabel(entry.key)
 
-    const bbox = new THREE.Box3().setFromObject(entry.mesh)
-    const { pos: camPos, target: camTarget } = fitCamera(bbox, camera, 90, 1.45)
+    const hitPoint = hits[0].point.clone()
+    const { bbox, pos: camPos, target: camTarget } = fitEntryCameraTopDown(entry, camera, SELECT_CAM_PAD, hitPoint)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
     const pieceSize = bbox.getSize(new THREE.Vector3())
     const maxSz     = Math.max(pieceSize.x, pieceSize.y, pieceSize.z, 0.5)
-    const liftHeight = Math.max(maxSz * 0.85, 2.2)
+    const liftHeight = Math.min(SELECT_LIFT_MAX, Math.max(maxSz * SELECT_LIFT_FACTOR, SELECT_LIFT_MIN))
     entry._liftTimer = setTimeout(() => {
       if (selectedRef.current === entry)
         startMeshAnim(entry, liftLocalTarget(entry, liftHeight), ANIM_LIFT, easeInOutQuart)
@@ -848,10 +1404,16 @@ export default function ThreeViewer() {
     const mount = mountRef.current
     const r     = R.current
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    if (!dracoLoaderRef.current) {
+      const draco = new DRACOLoader()
+      draco.setDecoderPath(DRACO_DECODER_PATH)
+      dracoLoaderRef.current = draco
+    }
+
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_PIXEL_RATIO_MAX))
     renderer.outputColorSpace    = THREE.SRGBColorSpace
-    renderer.shadowMap.enabled   = true
+    renderer.shadowMap.enabled   = ENABLE_SHADOWS
     renderer.shadowMap.type      = THREE.PCFShadowMap
     renderer.toneMapping         = THREE.ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.35
@@ -893,13 +1455,15 @@ export default function ThreeViewer() {
     scene.add(new THREE.AmbientLight(0xffffff, 1.4))
     const sun = new THREE.DirectionalLight(0xffffff, 3.2)
     sun.position.set(0, 50, 0)
-    sun.castShadow = true
-    sun.shadow.mapSize.setScalar(2048)
-    sun.shadow.camera.near = 0.5
-    sun.shadow.camera.far  = 200
-    sun.shadow.camera.left = sun.shadow.camera.bottom = -60
-    sun.shadow.camera.right = sun.shadow.camera.top   =  60
-    sun.shadow.bias = -0.001
+    sun.castShadow = ENABLE_SHADOWS
+    if (ENABLE_SHADOWS) {
+      sun.shadow.mapSize.setScalar(1024)
+      sun.shadow.camera.near = 0.5
+      sun.shadow.camera.far  = 200
+      sun.shadow.camera.left = sun.shadow.camera.bottom = -60
+      sun.shadow.camera.right = sun.shadow.camera.top   =  60
+      sun.shadow.bias = -0.001
+    }
     scene.add(sun)
     const fill = new THREE.DirectionalLight(0xd0e8ff, 0.45)
     fill.position.set(-10, 8, -12)
@@ -959,19 +1523,20 @@ export default function ThreeViewer() {
 
     /* ── Label overlay: proyección + anti-overlap cada frame ── */
     const _projV  = new THREE.Vector3()
-    const _worldP = new THREE.Vector3()
+    const _anchorW = new THREE.Vector3()
     function updateLabelsOverlay() {
       const labels = labelsDataRef.current
       if (labels.length === 0) return
       const cw = renderer.domElement.clientWidth
       const ch = renderer.domElement.clientHeight
       if (cw === 0 || ch === 0) return
-      const PAD = 6
+      const PAD = 10
 
       /* 1 — Proyectar anclas a coordenadas de pantalla */
       for (const lbl of labels) {
-        lbl.mesh.getWorldPosition(_worldP)
-        _projV.copy(_worldP).add(lbl.anchorOffset)
+        _anchorW.copy(lbl.anchorLocal)
+        lbl.mesh.localToWorld(_anchorW)
+        _projV.copy(_anchorW)
         _projV.project(camera)
         lbl.anchorSX = (_projV.x * 0.5 + 0.5) * cw
         lbl.anchorSY = (-_projV.y * 0.5 + 0.5) * ch
@@ -1015,6 +1580,21 @@ export default function ThreeViewer() {
           }
         }
         if (!moved) break
+      }
+
+      /* 3b — Pass vertical de seguridad para reducir solapes residuales */
+      vis.sort((a, b) => a.cy - b.cy)
+      for (let i = 0; i < vis.length; i++) {
+        const a = vis[i]
+        for (let j = i + 1; j < vis.length; j++) {
+          const b = vis[j]
+          const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(a.cx - b.cx)
+          const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs((a.cy - a.h / 2) - (b.cy - b.h / 2))
+          if (overlapX <= 0 || overlapY <= 0) continue
+          b.cy += overlapY + 2
+          const side = a.cx <= b.cx ? 1 : -1
+          b.cx += side * Math.min(14, overlapX / 2 + 2)
+        }
       }
 
       /* 4 — Acotar dentro del viewport */
@@ -1062,6 +1642,7 @@ export default function ThreeViewer() {
 
     /* ── Nav dot animation (polyline-based) ── */
     const _fwd = new THREE.Vector3()
+    const _lookAt = new THREE.Vector3()
     function tickNavAnim(dt) {
       const a = navAnimRef.current
       if (!a.active || !navDotRef.current) return
@@ -1070,25 +1651,33 @@ export default function ThreeViewer() {
       if (a.t > 1) a.t -= 1   // loop
 
       /* Position along polyline */
-      const pt = samplePolyline(a.orthoPoints, a.dists, a.pathLen, a.t)
-      navDotRef.current.position.copy(pt)
+      const pt = samplePolyline(a.polylinePoints, a.dists, a.pathLen, a.t)
+      const bob = 0.18 * Math.sin(a.t * Math.PI * 18)
+      navDotRef.current.position.set(pt.x, pt.y + bob, pt.z)
 
       /* Orient arrow in direction of travel */
       const lookT = Math.min(a.t + 0.005, 1)
-      const ahead = samplePolyline(a.orthoPoints, a.dists, a.pathLen, lookT)
+      const ahead = samplePolyline(a.polylinePoints, a.dists, a.pathLen, lookT)
       _fwd.subVectors(ahead, pt)
       if (_fwd.lengthSq() > 0.0001) {
-        navDotRef.current.lookAt(ahead)
+        _lookAt.copy(ahead)
+        _lookAt.y = pt.y + bob
+        navDotRef.current.lookAt(_lookAt)
       }
 
       /* Scale pulse */
-      const pulse = 1 + 0.3 * Math.sin(a.t * Math.PI * 30)
+      const pulse = 1.05 + 0.40 * Math.abs(Math.sin(a.t * Math.PI * 20))
       navDotRef.current.scale.setScalar(pulse)
 
-      /* Outer glow breath */
-      const glow = navDotRef.current.children[2] // outerGlow
-      if (glow && glow.material) {
-        glow.material.opacity = 0.12 + 0.22 * Math.abs(Math.sin(a.t * Math.PI * 18))
+      /* Solid outer shells pulse by scale (no transparency). */
+      const { outerGlow, halo } = navDotRef.current.userData
+      if (outerGlow) {
+        const glowPulse = 1 + 0.30 * Math.abs(Math.sin(a.t * Math.PI * 18))
+        outerGlow.scale.setScalar(glowPulse)
+      }
+      if (halo) {
+        const ringPulse = 1 + 0.22 * Math.abs(Math.sin(a.t * Math.PI * 18))
+        halo.scale.setScalar(ringPulse)
       }
 
       /* Animate dash offset for scrolling dashes */
@@ -1096,6 +1685,8 @@ export default function ThreeViewer() {
         a.dashMat.dashOffset -= dt * 8
       }
     }
+
+    let labelAcc = 0
 
     function loop() {
       r.raf = requestAnimationFrame(loop)
@@ -1107,7 +1698,11 @@ export default function ThreeViewer() {
       if (!camAnim.current.active) controls.update()
       else controls.target.copy(controls.target) // keep internal state in sync
       renderer.render(scene, camera)
-      updateLabelsOverlay()
+      labelAcc += dt
+      if (labelAcc >= (1 / LABEL_UPDATE_FPS)) {
+        updateLabelsOverlay()
+        labelAcc = 0
+      }
     }
     loop()
 
@@ -1126,6 +1721,8 @@ export default function ThreeViewer() {
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
       if (mount.contains(labelsOverlay)) mount.removeChild(labelsOverlay)
+      dracoLoaderRef.current?.dispose()
+      dracoLoaderRef.current = null
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1147,7 +1744,9 @@ export default function ThreeViewer() {
     setTransitioning(true)
     setSelectedName(null)
     setSelectedStatus(null)
-    setTooltip({ visible:false, name:'', x:0, y:0 })
+    const emptyTooltip = { visible:false, name:'', x:0, y:0 }
+    tooltipRef.current = emptyTooltip
+    setTooltip(emptyTooltip)
 
     /* Limpiar labels del overlay antes de destruir los meshes */
     cleanupLabels()
@@ -1158,16 +1757,24 @@ export default function ThreeViewer() {
       disposeObj(child)
     })
     meshes.current      = []
+    pickablesRef.current = []
+    focusPickablesRef.current = []
+    pickableToEntryRef.current.clear()
     animMap.current.clear()
     hoverRef.current    = null
     selectedRef.current = null
     camAnim.current.active = false
     navGraphRef.current = null
+    navOffsetRef.current.set(0, 0, 0)
+    modelCenterRef.current.set(0, 0, 0)
     clearRouteVisuals()
     clearNavMarkers()
     clearNavDebug()
 
-    new GLTFLoader().load(
+    const modelLoader = new GLTFLoader()
+    if (dracoLoaderRef.current) modelLoader.setDRACOLoader(dracoLoaderRef.current)
+
+    modelLoader.load(
       MODELS[activeModel].file,
       gltf => {
         /* Si este efecto fue desmontado (StrictMode) no tocar nada */
@@ -1176,34 +1783,73 @@ export default function ThreeViewer() {
         const model = gltf.scene
         const box = new THREE.Box3().setFromObject(model)
         const cen = box.getCenter(new THREE.Vector3())
+        modelCenterRef.current.copy(cen)
         model.position.sub(cen)
         scene.add(model)
         scene.updateMatrixWorld(true)
 
         /* Limpiar meshes por seguridad (doble protección) */
         meshes.current = []
+        pickablesRef.current = []
+        focusPickablesRef.current = []
+        pickableToEntryRef.current.clear()
 
+        const interactiveRoots = resolveInteractiveRoots(model)
         let n = 0
-        model.traverse(node => {
-          if (!node.isMesh) return
+        interactiveRoots.forEach(root => {
+          const objectMeshes = collectObjectMeshes(root)
+          if (objectMeshes.length === 0) return
+
+          const frontierMeshes = collectFrontierMeshes(root)
+          const focusCandidates = frontierMeshes.length > 0
+            ? frontierMeshes
+            : objectMeshes
+          const dominantFocusMesh = getLargestMeshByVolume(focusCandidates)
+            ?? getLargestMeshByVolume(objectMeshes)
+          const focusMeshes = dominantFocusMesh ? [dominantFocusMesh] : focusCandidates
+
           n++
-          node.name          = node.name?.trim() || `Parte ${n}`
-          node.castShadow    = true
-          node.receiveShadow = true
-          node.material = Array.isArray(node.material)
-            ? node.material.map(m => m.clone())
-            : node.material.clone()
-          const origWorldPos = new THREE.Vector3()
-          node.getWorldPosition(origWorldPos)
-          meshes.current.push({
-            mesh:         node,
-            origPos:      node.position.clone(),
+          const rawName = root.name?.trim() || `Zona ${n}`
+          const displayName = formatEntryName(rawName)
+          root.name = rawName
+
+          const colorMeshSet = new Set(focusMeshes)
+
+          objectMeshes.forEach(m => {
+            m.castShadow = ENABLE_SHADOWS
+            m.receiveShadow = ENABLE_SHADOWS
+            if (!colorMeshSet.has(m)) return
+            m.material = Array.isArray(m.material)
+              ? m.material.map(mat => mat?.clone?.() ?? mat)
+              : (m.material?.clone?.() ?? m.material)
+          })
+
+          const origWorldPos = getVisualCenterFromMeshes(focusMeshes)
+          const visualCenterLocal = root.worldToLocal(origWorldPos.clone())
+          const entry = {
+            key:          root.uuid,
+            mesh:         root,
+            meshes:       objectMeshes,
+            focusMeshes,
+            colorMeshes:  focusMeshes,
+            visualCenterLocal,
+            origPos:      root.position.clone(),
             origWorldPos: origWorldPos.clone(),
-            origScale:    node.scale.clone(),
-            origColor:    getMeshColor(node).clone(),
-            name:         node.name,
+            origScale:    root.scale.clone(),
+            origColor:    getObjectColor(dominantFocusMesh ?? root).clone(),
+            rawName,
+            name:         displayName,
             _label:       null,
             _liftTimer:   null,
+          }
+          meshes.current.push(entry)
+
+          objectMeshes.forEach(m => {
+            pickablesRef.current.push(m)
+            pickableToEntryRef.current.set(m.uuid, entry)
+          })
+          focusMeshes.forEach(m => {
+            focusPickablesRef.current.push(m)
           })
         })
 
@@ -1219,40 +1865,40 @@ export default function ThreeViewer() {
         labelsDataRef.current = []
 
         meshes.current.forEach(entry => {
-          const bb = new THREE.Box3().setFromObject(entry.mesh)
+          const bb = getEntryBounds(entry, 'full')
           const sz = bb.getSize(new THREE.Vector3())
           const rad = Math.max(sz.x, sz.y, sz.z) / 2
           if (rad < minRadius) return
 
-          const status = meshStatus(entry.name)
+          const status = meshStatus(entry.rawName ?? entry.name)
           const sColor = STATUS_COLORS[status]
 
           /* Tinte del material con el color de estado */
           const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.45)
-          setMeshColor(entry.mesh, tinted)
+          setEntryColor(entry, tinted)
           entry.origColor = tinted.clone()
 
           /* Ancla = top center del bounding box (world space) */
-          const anchor = new THREE.Vector3(
-            (bb.min.x + bb.max.x) / 2,
-            bb.max.y,
-            (bb.min.z + bb.max.z) / 2,
-          )
-          const meshWP = new THREE.Vector3()
-          entry.mesh.getWorldPosition(meshWP)
-          const anchorOffset = anchor.clone().sub(meshWP)
+          const anchor = getEntryLabelAnchorWorld(entry)
+          const anchorLocal = entry.mesh.worldToLocal(anchor.clone())
 
           /* Crear div del label */
           const div = document.createElement('div')
           div.className = 'room-label'
-          div.innerHTML =
-            `<span class="label-dot"></span>` +
-            `<span class="label-text">${entry.name}</span>`
+
+          const dot = document.createElement('span')
+          dot.className = 'label-dot'
+          div.appendChild(dot)
+
+          const text = document.createElement('span')
+          text.className = 'label-text'
+          text.textContent = entry.name
+          div.appendChild(text)
           div.style.setProperty('--label-accent', sColor)
           div.style.cursor = 'pointer'
           div.addEventListener('click', (e) => {
             e.stopPropagation()
-            handlersRef.current.onLabelClick?.(entry.name)
+            handlersRef.current.onLabelClick?.(entry.key)
           })
           overlay.appendChild(div)
 
@@ -1263,8 +1909,8 @@ export default function ThreeViewer() {
           svgEl.appendChild(line)
 
           const data = {
-            mesh: entry.mesh, anchorOffset,
-            el: div, lineEl: line, name: entry.name,
+            mesh: entry.mesh, anchorLocal,
+            el: div, lineEl: line, name: entry.name, key: entry.key,
             w: 0, h: 0, cx: 0, cy: 0,
             displayX: 0, displayY: 0, initialized: false,
             anchorSX: 0, anchorSY: 0,
@@ -1298,16 +1944,19 @@ export default function ThreeViewer() {
         /* ── Load nav mesh for pathfinding ── */
         const navFile = MODELS[activeModel].nav
         if (navFile) {
-          new GLTFLoader().load(navFile, navGltf => {
+          const navLoader = new GLTFLoader()
+          if (dracoLoaderRef.current) navLoader.setDRACOLoader(dracoLoaderRef.current)
+
+          navLoader.load(navFile, navGltf => {
             if (stale) return
             const navScene = navGltf.scene
-            /* Center nav mesh by ITS OWN bbox center so the wireframe
-               visually aligns with the independently-centered building.
-               We raycast directly against this mesh for nav coordinates,
-               so no coordinate conversion offset is needed. */
+            /* Nav and building are centered independently; keep the
+              resulting offset so we can convert points scene<->nav
+              consistently during pathfinding and rendering. */
             const navBox = new THREE.Box3().setFromObject(navScene)
             const navCen = navBox.getCenter(new THREE.Vector3())
             navScene.position.sub(navCen)
+            navOffsetRef.current.copy(modelCenterRef.current).sub(navCen)
             navScene.updateMatrixWorld(true)
 
             let navGeo = null
@@ -1321,9 +1970,6 @@ export default function ThreeViewer() {
             if (navGeo) {
               const graph = buildNavGraph(navGeo, navMatrix)
               navGraphRef.current = graph
-
-              /* Wireframe removed — route is placed at building-surface Y
-                 using building-click coords directly (XZ ≈ nav XZ). */
             }
           })
         }
@@ -1343,15 +1989,68 @@ export default function ThreeViewer() {
   /* Route is now built directly in onClick handler, no effect needed */
 
   useEffect(() => {
+    const controls = R.current.controls
+    if (!controls) return
+
+    if (navActive) {
+      controls.enableRotate = true
+      controls.enablePan = true
+      controls.enableZoom = true
+      controls.minPolarAngle = 0
+      controls.maxPolarAngle = Math.PI
+      return
+    }
+
+    controls.minPolarAngle = 0
+    controls.maxPolarAngle = Math.PI * 0.88
+  }, [navActive])
+
+  useEffect(() => {
     if (meshes.current.length === 0) return
+    const q = search.trim().toLowerCase()
     meshes.current.forEach(e => {
       if (e === selectedRef.current) return
-      if (search.trim() && e.name.toLowerCase().includes(search.toLowerCase()))
-        setMeshColor(e.mesh, C_FOUND)
+      const hit = q && (
+        e.name.toLowerCase().includes(q)
+        || (e.rawName?.toLowerCase()?.includes(q) ?? false)
+      )
+      if (hit)
+        setEntryColor(e, C_FOUND)
       else
-        setMeshColor(e.mesh, e.origColor)
+        setEntryColor(e, e.origColor)
     })
   }, [search])
+
+  function findSearchMatch(query) {
+    const q = query.trim().toLowerCase()
+    if (!q || meshes.current.length === 0) return null
+
+    const exact = meshes.current.find(e => {
+      const name = e.name.toLowerCase()
+      const raw = e.rawName?.toLowerCase() ?? ''
+      return name === q || raw === q
+    })
+    if (exact) return exact
+
+    const startsWith = meshes.current.find(e => {
+      const name = e.name.toLowerCase()
+      const raw = e.rawName?.toLowerCase() ?? ''
+      return name.startsWith(q) || raw.startsWith(q)
+    })
+    if (startsWith) return startsWith
+
+    return meshes.current.find(e => {
+      const name = e.name.toLowerCase()
+      const raw = e.rawName?.toLowerCase() ?? ''
+      return name.includes(q) || raw.includes(q)
+    }) ?? null
+  }
+
+  function triggerSearchSelection() {
+    const match = findSearchMatch(search)
+    if (!match) return
+    handlersRef.current.onLabelClick?.(match.key)
+  }
 
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden"
@@ -1366,8 +2065,20 @@ export default function ThreeViewer() {
 
         <div className="flex items-center gap-2 flex-1 min-w-[120px] px-2.5 py-1.5 rounded-lg"
           style={{ background:'var(--color-bg)', border:'1px solid var(--color-border)' }}>
-          <Search size={13} style={{ color:'var(--color-text-muted)', flexShrink:0 }} />
+          <button
+            onClick={triggerSearchSelection}
+            disabled={!search.trim()}
+            className="rounded p-0.5 transition-opacity hover:opacity-70 disabled:opacity-40"
+            style={{ color:'var(--color-text-muted)', flexShrink:0 }}>
+            <Search size={13} />
+          </button>
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                triggerSearchSelection()
+              }
+            }}
             placeholder="Buscar…"
             className="text-[13px] outline-none flex-1 min-w-0 bg-transparent"
             style={{ color:'var(--color-text)' }}
