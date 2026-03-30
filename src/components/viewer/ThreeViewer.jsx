@@ -8,7 +8,7 @@ import {
   Search, X, Layers, Building2, RotateCcw, Info, Navigation2, XCircle,
   MapPin, Crosshair, ArrowRight,
 } from 'lucide-react'
-import { buildNavGraph, findPath, findTriangle } from './navPathfinding'
+import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
 
 const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
@@ -25,16 +25,23 @@ const ANIM_LIFT    = 700
 const LIFT_DELAY   = 0.58
 const HOVER_LIFT   = 2.4
 const HOVER_OUT    = 1.3
-const SELECT_LIFT_MIN = 0.35
-const SELECT_LIFT_MAX = 1.2
-const SELECT_LIFT_FACTOR = 0.2
+const SELECT_LIFT_FIXED = 1.0
+const SELECT_CAMERA_FIXED_DIST = 18
 const IDLE_TIMEOUT = 30000  // ms — inactividad para regresar a vista general
-const SELECT_CAM_PAD = 1.01
-const ROUTE_FRAME_MARGIN_FRAC = 1
-const ROUTE_FRAME_MARGIN_ABS = 1
-const ROUTE_FRAME_MIN_SPAN = 1
+const SELECT_CAM_PAD = 1.003
+const ROUTE_FRAME_PAD_MULT = 1.2
+const ROUTE_FRAME_MARGIN_FRAC = 0.05
+const ROUTE_FRAME_MARGIN_ABS = 0.42
+const ROUTE_FRAME_MARGIN_MAX = 1.35
+const ROUTE_FRAME_MIN_SPAN = 1.8
 const ROUTE_INDICATOR_COLOR = 0x00eaff
 const ROUTE_CLICK_Z_OFFSET = 20
+const NAV_DEBUG_SAMPLE_MAX = 18
+const NAV_DEBUG_POINTS_MAX = 120
+const ORTHO_AXIS_SNAP_ABS = 0.55
+const ORTHO_AXIS_SNAP_RATIO = 0.14
+const ORTHO_ZIGZAG_SHORT_SEG = 1.8
+const ORTHO_ZIGZAG_RETURN_TOL = 0.22
 const RENDER_PIXEL_RATIO_MAX = 1.25
 const ENABLE_SHADOWS = false
 const LABEL_UPDATE_FPS = 24
@@ -89,6 +96,69 @@ function toNDC(e, canvas) {
   const cx = e.clientX - rect.left
   const cy = e.clientY - rect.top
   return { nx:(cx/rect.width)*2-1, ny:-(cy/rect.height)*2+1, cx, cy }
+}
+
+function toDebugVec(point) {
+  if (!point) return null
+  return {
+    x: Math.round(point.x * 100) / 100,
+    y: Math.round(point.y * 100) / 100,
+    z: Math.round(point.z * 100) / 100,
+  }
+}
+
+function sampleDebugVecList(points, max = NAV_DEBUG_SAMPLE_MAX) {
+  if (!points || points.length === 0) return []
+  if (points.length <= max) return points.map(toDebugVec)
+
+  const out = []
+  const last = points.length - 1
+  const steps = max - 1
+  for (let i = 0; i <= steps; i++) {
+    const idx = Math.round((i / steps) * last)
+    out.push(toDebugVec(points[idx]))
+  }
+  return out
+}
+
+function formatDebugVec(point) {
+  if (!point) return '-'
+  return `x ${point.x.toFixed(2)}  y ${point.y.toFixed(2)}  z ${point.z.toFixed(2)}`
+}
+
+function computeRouteMetrics(points) {
+  if (!points || points.length < 2) {
+    return { length: 0, turns: 0, curvature: 0 }
+  }
+
+  let length = 0
+  let turns = 0
+  let curvature = 0
+
+  for (let i = 1; i < points.length; i++) {
+    length += points[i - 1].distanceTo(points[i])
+  }
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const v1 = new THREE.Vector3().subVectors(points[i], points[i - 1])
+    const v2 = new THREE.Vector3().subVectors(points[i + 1], points[i])
+    v1.y = 0
+    v2.y = 0
+
+    const len1 = v1.length()
+    const len2 = v2.length()
+    if (len1 <= 1e-5 || len2 <= 1e-5) continue
+
+    let cos = v1.dot(v2) / (len1 * len2)
+    if (cos > 1) cos = 1
+    if (cos < -1) cos = -1
+    const heading = Math.acos(cos) * (180 / Math.PI)
+
+    if (heading >= 30) turns += 1
+    curvature += heading / 180
+  }
+
+  return { length, turns, curvature }
 }
 
 const _raycaster = new THREE.Raycaster()
@@ -544,30 +614,156 @@ function fitEntryCameraTopDown(entry, camera, padMult = 1.02, focusPoint = null)
   }
 }
 
-function fitRouteCameraTopDown(points, camera, padMult = 1.0) {
+function getBoxCorners(box) {
+  const min = box.min
+  const max = box.max
+  return [
+    new THREE.Vector3(min.x, min.y, min.z),
+    new THREE.Vector3(min.x, min.y, max.z),
+    new THREE.Vector3(min.x, max.y, min.z),
+    new THREE.Vector3(min.x, max.y, max.z),
+    new THREE.Vector3(max.x, min.y, min.z),
+    new THREE.Vector3(max.x, min.y, max.z),
+    new THREE.Vector3(max.x, max.y, min.z),
+    new THREE.Vector3(max.x, max.y, max.z),
+  ]
+}
+
+function fitRouteCameraToView(points, camera, controls = null, padMult = ROUTE_FRAME_PAD_MULT) {
   if (!points || points.length === 0) return null
-  const bb = new THREE.Box3()
-  points.forEach(p => bb.expandByPoint(p))
+  const bb = new THREE.Box3().setFromPoints(points)
   if (bb.isEmpty()) return null
 
   const center = bb.getCenter(new THREE.Vector3())
   const size = bb.getSize(new THREE.Vector3())
-  const marginX = Math.max(ROUTE_FRAME_MARGIN_ABS, size.x * ROUTE_FRAME_MARGIN_FRAC)
-  const marginZ = Math.max(ROUTE_FRAME_MARGIN_ABS, size.z * ROUTE_FRAME_MARGIN_FRAC)
+  const planarSpan = Math.max(size.x, size.z, ROUTE_FRAME_MIN_SPAN)
+
+  const marginX = THREE.MathUtils.clamp(
+    size.x * ROUTE_FRAME_MARGIN_FRAC,
+    ROUTE_FRAME_MARGIN_ABS,
+    ROUTE_FRAME_MARGIN_MAX,
+  )
+  const marginY = THREE.MathUtils.clamp(
+    Math.max(size.y * ROUTE_FRAME_MARGIN_FRAC, planarSpan * 0.04),
+    ROUTE_FRAME_MARGIN_ABS * 0.45,
+    ROUTE_FRAME_MARGIN_MAX * 0.65,
+  )
+  const marginZ = THREE.MathUtils.clamp(
+    size.z * ROUTE_FRAME_MARGIN_FRAC,
+    ROUTE_FRAME_MARGIN_ABS,
+    ROUTE_FRAME_MARGIN_MAX,
+  )
   const halfX = Math.max(
     (size.x * 0.5) + marginX,
     ROUTE_FRAME_MIN_SPAN * 0.5,
+  )
+  const halfY = Math.max(
+    (size.y * 0.5) + marginY,
+    ROUTE_FRAME_MIN_SPAN * 0.15,
   )
   const halfZ = Math.max(
     (size.z * 0.5) + marginZ,
     ROUTE_FRAME_MIN_SPAN * 0.5,
   )
-  bb.min.x = center.x - halfX
-  bb.max.x = center.x + halfX
-  bb.min.z = center.z - halfZ
-  bb.max.z = center.z + halfZ
 
-  return fitCameraTopDown(bb, camera, padMult)
+  const frameBox = new THREE.Box3(
+    new THREE.Vector3(center.x - halfX, center.y - halfY, center.z - halfZ),
+    new THREE.Vector3(center.x + halfX, center.y + halfY, center.z + halfZ),
+  )
+  const frameCenter = frameBox.getCenter(new THREE.Vector3())
+
+  const viewDir = camera.position.clone().sub(controls?.target ?? frameCenter)
+  if (viewDir.lengthSq() <= 1e-8) {
+    viewDir.set(0.24, 0.93, 0.28)
+  }
+  viewDir.normalize()
+
+  if (viewDir.y <= 0.05) {
+    viewDir.set(0.24, 0.93, 0.28)
+  }
+  viewDir.normalize()
+
+  const forward = viewDir.clone().negate()
+  const upHint = Math.abs(forward.y) > 0.985
+    ? new THREE.Vector3(0, 0, -1)
+    : new THREE.Vector3(0, 1, 0)
+
+  const right = new THREE.Vector3().crossVectors(forward, upHint)
+  if (right.lengthSq() <= 1e-8) {
+    right.set(1, 0, 0)
+  } else {
+    right.normalize()
+  }
+
+  const up = new THREE.Vector3().crossVectors(right, forward).normalize()
+
+  const corners = getBoxCorners(frameBox)
+  const rel = new THREE.Vector3()
+  let halfWidth = 0
+  let halfHeight = 0
+  let halfDepth = 0
+
+  corners.forEach(corner => {
+    rel.copy(corner).sub(frameCenter)
+    halfWidth = Math.max(halfWidth, Math.abs(rel.dot(right)))
+    halfHeight = Math.max(halfHeight, Math.abs(rel.dot(up)))
+    halfDepth = Math.max(halfDepth, Math.abs(rel.dot(forward)))
+  })
+
+  const frameSize = frameBox.getSize(new THREE.Vector3())
+  const maxDim = Math.max(frameSize.x, frameSize.y, frameSize.z)
+  const fovHalf = THREE.MathUtils.degToRad(camera.fov * 0.5)
+  const aspect = Math.max(0.1, camera.aspect || 1)
+  const hFovHalf = Math.atan(Math.tan(fovHalf) * aspect)
+
+  const fitHeightDistance = halfHeight / Math.max(Math.tan(fovHalf), 1e-6)
+  const fitWidthDistance = halfWidth / Math.max(Math.tan(hFovHalf), 1e-6)
+  const baseDistance = maxDim / Math.max(2 * Math.tan(fovHalf), 1e-6)
+
+  let distance = Math.max(fitHeightDistance, fitWidthDistance, baseDistance)
+  distance = (distance + halfDepth) * padMult
+  distance = Math.max(distance, 1.2)
+
+  return {
+    bbox: frameBox,
+    pos: frameCenter.clone().addScaledVector(viewDir, distance),
+    target: frameCenter.clone(),
+  }
+}
+
+function getEntrySelectionAnchorWorld(entry) {
+  if (entry?._label?.anchorLocal) {
+    return entry.mesh.localToWorld(entry._label.anchorLocal.clone())
+  }
+  return getEntryLabelAnchorWorld(entry)
+}
+
+function fitEntryCameraUsingAnchor(entry, camera, anchorWorld, padMult = 1.02) {
+  const frame = getEntryFrameFromSolids(entry)
+  const baseBbox = frame.bbox.clone()
+  const rawTargetX = THREE.MathUtils.clamp(anchorWorld.x, baseBbox.min.x, baseBbox.max.x)
+  const rawTargetY = THREE.MathUtils.clamp(anchorWorld.y, baseBbox.min.y, baseBbox.max.y)
+  const rawTargetZ = THREE.MathUtils.clamp(anchorWorld.z, baseBbox.min.z, baseBbox.max.z)
+  const target = new THREE.Vector3(
+    rawTargetX,
+    rawTargetY,
+    rawTargetZ,
+  )
+
+  /* Fixed perpendicular distance for every piece. */
+  const dist = Math.max(1.2, SELECT_CAMERA_FIXED_DIST * padMult)
+  const maxLiftByCamera = Math.max(0, dist - 0.6)
+  const liftHeight = Math.min(SELECT_LIFT_FIXED, maxLiftByCamera)
+
+  const liftedBox = baseBbox.clone()
+  liftedBox.max.y = baseBbox.max.y + liftHeight
+
+  return {
+    bbox: liftedBox,
+    liftHeight,
+    target,
+    pos: new THREE.Vector3(target.x, target.y + dist, target.z),
+  }
 }
 
 export default function ThreeViewer() {
@@ -619,6 +815,7 @@ export default function ThreeViewer() {
   const navDotRef    = useRef(null)      // animated dot group
   const navAnimRef   = useRef({ active: false, t: 0, pathLen: 0, points: [] })
   const navDebugRef  = useRef(null)      // debug wireframe mesh
+  const navDebugPointsRef = useRef(null)  // debug points/lines for route pipeline
   const navMarkersRef = useRef([])       // origin/dest marker meshes
   const navOriginPt  = useRef(null)      // THREE.Vector3 — clicked origin (building space)
   const navDestPt    = useRef(null)      // THREE.Vector3 — clicked dest (building space)
@@ -628,6 +825,10 @@ export default function ThreeViewer() {
   const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
   const [navDest,      setNavDest]       = useState(null)    // display label for dest
   const [navActive,    setNavActive]     = useState(false)   // route displayed
+  const [showNavDebug, setShowNavDebug]  = useState(false)
+  const [navDebugInfo, setNavDebugInfo]  = useState(null)
+  const navModeLiveRef = useRef(false)
+  const showNavDebugLiveRef = useRef(false)
 
   /* ── Limpia todas las etiquetas del overlay ── */
   function cleanupLabels() {
@@ -739,8 +940,8 @@ export default function ThreeViewer() {
     return entry.origPos.clone().add(localDelta)
   }
 
-  function liftLocalTarget(entry, extraHeight) {
-    const center = getEntryWorldCenter(entry)
+  function liftLocalTarget(entry, extraHeight, worldAnchor = null) {
+    const center = worldAnchor ? worldAnchor.clone() : getEntryWorldCenter(entry)
     const deltaWorld = new THREE.Vector3(0, extraHeight, 0)
     const localDelta = toParentLocalDelta(entry, center, deltaWorld)
     return entry.mesh.position.clone().add(localDelta)
@@ -923,27 +1124,115 @@ export default function ThreeViewer() {
 
     scene.add(group)
     navMarkersRef.current.push(group)
+    return group
   }
 
   function clearNavDebug() {
     const scene = R.current.scene
     if (navDebugRef.current) {
       scene?.remove(navDebugRef.current)
-      navDebugRef.current.geometry?.dispose()
-      if (Array.isArray(navDebugRef.current.material))
-        navDebugRef.current.material.forEach(m => m.dispose())
-      else
-        navDebugRef.current.material?.dispose()
+      navDebugRef.current.traverse(node => {
+        node.geometry?.dispose?.()
+        if (Array.isArray(node.material)) {
+          node.material.forEach(m => m?.dispose?.())
+        } else {
+          node.material?.dispose?.()
+        }
+      })
       navDebugRef.current = null
     }
+  }
+
+  function clearNavDebugPoints() {
+    const scene = R.current.scene
+    if (!navDebugPointsRef.current) return
+    scene?.remove(navDebugPointsRef.current)
+    navDebugPointsRef.current.traverse(node => {
+      node.geometry?.dispose?.()
+      if (Array.isArray(node.material)) {
+        node.material.forEach(m => m?.dispose?.())
+      } else {
+        node.material?.dispose?.()
+      }
+    })
+    navDebugPointsRef.current = null
+  }
+
+  function rebuildNavDebugPoints(data) {
+    clearNavDebugPoints()
+    const scene = R.current.scene
+    if (!scene || !data) return
+
+    const group = new THREE.Group()
+
+    const addSphere = (point, color, radius = 0.18) => {
+      if (!point) return
+      const sphere = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 14, 10),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.98,
+          depthTest: false,
+          depthWrite: false,
+        }),
+      )
+      sphere.position.copy(point)
+      sphere.renderOrder = 1008
+      group.add(sphere)
+    }
+
+    const addPolyline = (points, color, opacity = 0.92) => {
+      if (!points || points.length < 2) return
+      const geo = new THREE.BufferGeometry().setFromPoints(points)
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+          depthTest: false,
+          depthWrite: false,
+        }),
+      )
+      line.renderOrder = 1007
+      group.add(line)
+    }
+
+    const addPointCloud = (points, color, radius = 0.1) => {
+      if (!points || points.length === 0) return
+      const cap = Math.min(points.length, NAV_DEBUG_POINTS_MAX)
+      for (let i = 0; i < cap; i++) {
+        addSphere(points[i], color, radius)
+      }
+    }
+
+    addSphere(data.originScene, 0x22c55e, 0.24)
+    addSphere(data.destSceneInput, 0xef4444, 0.24)
+    addSphere(data.snappedDestScene, 0xd946ef, 0.26)
+
+    if (data.navRawWaypoints?.length > 1) {
+      addPolyline(data.navRawWaypoints, 0x3b82f6, 0.95)
+      addPointCloud(data.navRawWaypoints, 0x60a5fa, 0.09)
+    }
+
+    if (data.routeScenePoints?.length > 1) {
+      addPolyline(data.routeScenePoints, 0xffc547, 0.95)
+      addPointCloud(data.routeScenePoints, 0xffdd7a, 0.11)
+    }
+
+    group.visible = showNavDebugLiveRef.current && navModeLiveRef.current
+    scene.add(group)
+    navDebugPointsRef.current = group
   }
 
   function exitNavigation() {
     clearRouteVisuals()
     clearNavMarkers()
-    clearNavDebug()
+    clearNavDebugPoints()
     navOriginPt.current = null
     navDestPt.current = null
+    setNavDebugInfo(null)
     setNavMode(false)
     setNavOrigin(null)
     setNavDest(null)
@@ -988,12 +1277,148 @@ export default function ThreeViewer() {
     return pts[pts.length - 1].clone()
   }
 
+  function pointToSegmentDistanceSqXZ(p, a, b) {
+    const abx = b.x - a.x
+    const abz = b.z - a.z
+    const ab2 = (abx * abx) + (abz * abz)
+    if (ab2 <= 1e-10) {
+      const dx = p.x - a.x
+      const dz = p.z - a.z
+      return (dx * dx) + (dz * dz)
+    }
+
+    let t = (((p.x - a.x) * abx) + ((p.z - a.z) * abz)) / ab2
+    if (t < 0) t = 0
+    if (t > 1) t = 1
+    const qx = a.x + (abx * t)
+    const qz = a.z + (abz * t)
+    const dx = p.x - qx
+    const dz = p.z - qz
+    return (dx * dx) + (dz * dz)
+  }
+
+  function simplifyPolylineRDPXZ(pts, epsilon = 0.9) {
+    if (!pts || pts.length <= 2) return pts ? pts.map(p => p.clone()) : []
+
+    const epsSq = epsilon * epsilon
+
+    function recurse(start, end, out) {
+      if ((end - start) <= 1) return
+
+      let bestIdx = -1
+      let bestD2 = -1
+      const a = pts[start]
+      const b = pts[end]
+
+      for (let i = start + 1; i < end; i++) {
+        const d2 = pointToSegmentDistanceSqXZ(pts[i], a, b)
+        if (d2 > bestD2) {
+          bestD2 = d2
+          bestIdx = i
+        }
+      }
+
+      if (bestIdx >= 0 && bestD2 > epsSq) {
+        recurse(start, bestIdx, out)
+        out.push(pts[bestIdx].clone())
+        recurse(bestIdx, end, out)
+      }
+    }
+
+    const out = [pts[0].clone()]
+    recurse(0, pts.length - 1, out)
+    out.push(pts[pts.length - 1].clone())
+    return out
+  }
+
+  function simplifyRouteGuidePoints(pts, graph = null) {
+    if (!pts || pts.length <= 2) return pts ? pts.map(p => p.clone()) : []
+    const { total } = polylineDistances(pts)
+    const epsilon = Math.max(0.75, Math.min(1.9, total / 58))
+    const rough = simplifyPolylineRDPXZ(pts, epsilon)
+    if (!graph || rough.length <= 2) return rough
+
+    /* Keep the longest valid jumps while ensuring each segment stays on navmesh. */
+    const out = [rough[0].clone()]
+    let i = 0
+    while (i < rough.length - 1) {
+      let best = i + 1
+      for (let j = rough.length - 1; j > i + 1; j--) {
+        if (isSegmentOnNavMeshStrict(rough[i], rough[j], graph)) {
+          best = j
+          break
+        }
+      }
+      out.push(rough[best].clone())
+      i = best
+    }
+
+    for (let k = 1; k < out.length; k++) {
+      if (!isSegmentOnNavMeshStrict(out[k - 1], out[k], graph)) {
+        return pts.map(p => p.clone())
+      }
+    }
+
+    return out
+  }
+
   function sceneToNavPoint(point) {
     return point.clone().add(navOffsetRef.current)
   }
 
   function navToScenePoint(point) {
     return point.clone().sub(navOffsetRef.current)
+  }
+
+  function pointInTriXZStrict(px, pz, ax, az, bx, bz, cx, cz) {
+    const eps = 1e-5
+    const d1 = (px - bx) * (az - bz) - (ax - bx) * (pz - bz)
+    const d2 = (px - cx) * (bz - cz) - (bx - cx) * (pz - cz)
+    const d3 = (px - ax) * (cz - az) - (cx - ax) * (pz - az)
+    const hasNeg = (d1 < -eps) || (d2 < -eps) || (d3 < -eps)
+    const hasPos = (d1 > eps) || (d2 > eps) || (d3 > eps)
+    return !(hasNeg && hasPos)
+  }
+
+  function isPointOnNavMeshStrict(navPoint, graph) {
+    if (!graph) return false
+    const { verts, tris } = graph
+    const triCount = graph.triCount ?? 0
+
+    for (let t = 0; t < triCount; t++) {
+      const ia = tris[t * 3]
+      const ib = tris[t * 3 + 1]
+      const ic = tris[t * 3 + 2]
+      if (pointInTriXZStrict(
+        navPoint.x,
+        navPoint.z,
+        verts[ia * 3], verts[ia * 3 + 2],
+        verts[ib * 3], verts[ib * 3 + 2],
+        verts[ic * 3], verts[ic * 3 + 2],
+      )) return true
+    }
+    return false
+  }
+
+  function isSegmentOnNavMeshStrict(aScene, bScene, graph, step = 0.35) {
+    if (!graph) return true
+    const a = sceneToNavPoint(aScene)
+    const b = sceneToNavPoint(bScene)
+    const dx = b.x - a.x
+    const dz = b.z - a.z
+    const len = Math.hypot(dx, dz)
+    const samples = Math.max(2, Math.ceil(len / step))
+
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples
+      const p = new THREE.Vector3(
+        a.x + dx * t,
+        a.y + ((b.y - a.y) * t),
+        a.z + dz * t,
+      )
+      if (!isPointOnNavMeshStrict(p, graph)) return false
+    }
+    return true
   }
 
   function nearestReachableNavPoint(from, to, graph) {
@@ -1034,6 +1459,190 @@ export default function ThreeViewer() {
     return p
   }
 
+  function trianglesConnected(startTri, endTri, graph) {
+    if (startTri == null || endTri == null) return false
+    if (startTri < 0 || endTri < 0) return false
+    if (startTri === endTri) return true
+
+    const triCount = graph.triCount ?? graph.centroids.length
+    const visited = new Uint8Array(triCount)
+    const queue = [startTri]
+    let qHead = 0
+    visited[startTri] = 1
+
+    while (qHead < queue.length) {
+      const tri = queue[qHead++]
+      const nbs = graph.adj[tri] || []
+      for (const nb of nbs) {
+        if (nb === endTri) return true
+        if (visited[nb]) continue
+        visited[nb] = 1
+        queue.push(nb)
+      }
+    }
+    return false
+  }
+
+  function segmentAxisXZ(a, b) {
+    return Math.abs(b.x - a.x) >= Math.abs(b.z - a.z) ? 'x' : 'z'
+  }
+
+  function simplifyOrthogonalPolyline(pts, minDist = 0.2, graph = null) {
+    if (!pts || pts.length === 0) return []
+    const minDistSq = minDist * minDist
+    const out = [pts[0].clone()]
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].distanceToSquared(out[out.length - 1]) <= minDistSq) continue
+      out.push(pts[i].clone())
+    }
+
+    const EPS = 1e-4
+    for (let i = out.length - 2; i >= 1; i--) {
+      const a = out[i - 1]
+      const b = out[i]
+      const c = out[i + 1]
+      const sameX = Math.abs(a.x - b.x) < EPS && Math.abs(b.x - c.x) < EPS
+      const sameZ = Math.abs(a.z - b.z) < EPS && Math.abs(b.z - c.z) < EPS
+      if ((sameX || sameZ) && (!graph || isSegmentOnNavMeshStrict(a, c, graph))) out.splice(i, 1)
+    }
+
+    const segAxis = (a, b) => (Math.abs(b.x - a.x) >= Math.abs(b.z - a.z) ? 'x' : 'z')
+    let i = 0
+    while (i <= out.length - 4) {
+      const p0 = out[i]
+      const p1 = out[i + 1]
+      const p2 = out[i + 2]
+      const p3 = out[i + 3]
+      const a1 = segAxis(p0, p1)
+      const a2 = segAxis(p1, p2)
+      const a3 = segAxis(p2, p3)
+
+      if (a1 !== a2 && a1 === a3 && p1.distanceTo(p2) < ORTHO_ZIGZAG_SHORT_SEG) {
+        const returnsSameLane = a1 === 'x'
+          ? Math.abs(p0.z - p3.z) < ORTHO_ZIGZAG_RETURN_TOL
+          : Math.abs(p0.x - p3.x) < ORTHO_ZIGZAG_RETURN_TOL
+        if (returnsSameLane && (!graph || isSegmentOnNavMeshStrict(p0, p3, graph))) {
+          out.splice(i + 1, 2)
+          i = Math.max(0, i - 1)
+          continue
+        }
+      }
+
+      i++
+    }
+
+    if (out.length >= 4) {
+      const segAxis = (a, b) => (Math.abs(b.x - a.x) >= Math.abs(b.z - a.z) ? 'x' : 'z')
+      const p0 = out[out.length - 4]
+      const p1 = out[out.length - 3]
+      const p2 = out[out.length - 2]
+      const p3 = out[out.length - 1]
+      const a1 = segAxis(p0, p1)
+      const a2 = segAxis(p1, p2)
+      const a3 = segAxis(p2, p3)
+      if (a1 !== a2 && a1 === a3 && p1.distanceTo(p2) < (ORTHO_ZIGZAG_SHORT_SEG * 1.35)) {
+        const nearSameLane = a1 === 'x'
+          ? Math.abs(p0.z - p3.z) < (ORTHO_ZIGZAG_RETURN_TOL * 1.4)
+          : Math.abs(p0.x - p3.x) < (ORTHO_ZIGZAG_RETURN_TOL * 1.4)
+        if (nearSameLane && (!graph || isSegmentOnNavMeshStrict(p0, p3, graph))) {
+          out.splice(out.length - 3, 2)
+        }
+      }
+    }
+
+    return out
+  }
+
+  function orthogonalizePolyline(pts, floorY, graph = null) {
+    if (!pts || pts.length < 2) return pts ? pts.map(p => p.clone()) : []
+
+    const out = [pts[0].clone()]
+    out[0].y = floorY
+    let lastAxis = null
+
+    for (let i = 1; i < pts.length; i++) {
+      const prev = out[out.length - 1]
+      const rawNext = pts[i].clone()
+      rawNext.y = floorY
+      const next = rawNext.clone()
+
+      let dx = next.x - prev.x
+      let dz = next.z - prev.z
+      const adx = Math.abs(dx)
+      const adz = Math.abs(dz)
+
+      if (adx <= ORTHO_AXIS_SNAP_ABS || (adz > 1e-5 && adx <= adz * ORTHO_AXIS_SNAP_RATIO)) {
+        next.x = prev.x
+        dx = 0
+      } else if (adz <= ORTHO_AXIS_SNAP_ABS || (adx > 1e-5 && adz <= adx * ORTHO_AXIS_SNAP_RATIO)) {
+        next.z = prev.z
+        dz = 0
+      }
+
+      const axisAligned = Math.abs(dx) < 1e-4 || Math.abs(dz) < 1e-4
+      if (axisAligned) {
+        if (graph && !isSegmentOnNavMeshStrict(prev, next, graph)) {
+          if (isSegmentOnNavMeshStrict(prev, rawNext, graph)) {
+            out.push(rawNext)
+            lastAxis = Math.abs(rawNext.x - prev.x) >= Math.abs(rawNext.z - prev.z) ? 'x' : 'z'
+            continue
+          }
+          continue
+        }
+        out.push(next)
+        lastAxis = Math.abs(dx) >= Math.abs(dz) ? 'x' : 'z'
+        continue
+      }
+
+      const cornerXFirst = prev.clone()
+      cornerXFirst.x = next.x
+      cornerXFirst.y = floorY
+
+      const cornerZFirst = prev.clone()
+      cornerZFirst.z = next.z
+      cornerZFirst.y = floorY
+
+      const lookAhead = (i + 1 < pts.length) ? pts[i + 1] : next
+      let scoreX = cornerXFirst.distanceToSquared(lookAhead)
+      let scoreZ = cornerZFirst.distanceToSquared(lookAhead)
+
+      if (lastAxis === 'x') scoreX *= 0.98
+      if (lastAxis === 'z') scoreZ *= 0.98
+
+      let preferred = scoreX <= scoreZ ? 'x' : 'z'
+      if (Math.abs(scoreX - scoreZ) < 1e-4 && !lastAxis) {
+        preferred = segmentAxisXZ(prev, next)
+      }
+
+      const canX = !graph || (
+        isSegmentOnNavMeshStrict(prev, cornerXFirst, graph)
+        && isSegmentOnNavMeshStrict(cornerXFirst, next, graph)
+      )
+      const canZ = !graph || (
+        isSegmentOnNavMeshStrict(prev, cornerZFirst, graph)
+        && isSegmentOnNavMeshStrict(cornerZFirst, next, graph)
+      )
+
+      if (canX && !canZ) preferred = 'x'
+      else if (canZ && !canX) preferred = 'z'
+      else if (!canX && !canZ) {
+        if (!graph || isSegmentOnNavMeshStrict(prev, rawNext, graph)) {
+          out.push(rawNext)
+          lastAxis = Math.abs(rawNext.x - prev.x) >= Math.abs(rawNext.z - prev.z) ? 'x' : 'z'
+        }
+        continue
+      }
+
+      const corner = preferred === 'x' ? cornerXFirst : cornerZFirst
+
+      out.push(corner)
+      out.push(next)
+      lastAxis = preferred === 'x' ? 'z' : 'x'
+    }
+
+    return simplifyOrthogonalPolyline(out, 0.35, graph)
+  }
+
   function buildRoute() {
     const graph = navGraphRef.current
     const fromScene = navOriginPt.current
@@ -1046,38 +1655,133 @@ export default function ThreeViewer() {
     const fromNav = sceneToNavPoint(fromScene)
     const toNav = sceneToNavPoint(toScene)
 
-    let routeTargetNav = toNav.clone()
-    let waypointsNav = findPath(fromNav.clone(), routeTargetNav.clone(), graph)
-    if (!waypointsNav || waypointsNav.length < 2) {
-      const fallback = nearestReachableNavPoint(fromNav, toNav, graph)
-      if (fallback) {
-        routeTargetNav = fallback
-        waypointsNav = findPath(fromNav.clone(), routeTargetNav.clone(), graph)
-        if (waypointsNav && waypointsNav.length >= 2) {
-          const fallbackScene = navToScenePoint(routeTargetNav)
-          navDestPt.current = fallbackScene.clone()
-          while (navMarkersRef.current.length > 1) {
-            const old = navMarkersRef.current.pop()
-            old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
-            R.current.scene?.remove(old)
-          }
-          addNavMarker(fallbackScene, 0xff3333, 'dest')
-        }
-      }
+    const debugPayload = {
+      originScene: fromScene.clone(),
+      destSceneInput: toScene.clone(),
+      snappedDestScene: null,
+      originNav: fromNav.clone(),
+      destNavInput: toNav.clone(),
+      snappedDestNav: null,
+      navRawWaypoints: [],
+      routeScenePoints: [],
+      navMetrics: { length: 0, turns: 0, curvature: 0 },
+      routeMetrics: { length: 0, turns: 0, curvature: 0 },
     }
-    if (!waypointsNav || waypointsNav.length < 2) {
+    const publishDebug = () => {
+      setNavDebugInfo({
+        originScene: toDebugVec(debugPayload.originScene),
+        destSceneInput: toDebugVec(debugPayload.destSceneInput),
+        snappedDestScene: toDebugVec(debugPayload.snappedDestScene),
+        originNav: toDebugVec(debugPayload.originNav),
+        destNavInput: toDebugVec(debugPayload.destNavInput),
+        snappedDestNav: toDebugVec(debugPayload.snappedDestNav),
+        navWaypointsCount: debugPayload.navRawWaypoints.length,
+        routePointsCount: debugPayload.routeScenePoints.length,
+        navWaypointsSample: sampleDebugVecList(debugPayload.navRawWaypoints),
+        routePointsSample: sampleDebugVecList(debugPayload.routeScenePoints),
+        navLength: debugPayload.navMetrics.length,
+        navTurns: debugPayload.navMetrics.turns,
+        navCurvature: debugPayload.navMetrics.curvature,
+        routeLength: debugPayload.routeMetrics.length,
+        routeTurns: debugPayload.routeMetrics.turns,
+        routeCurvature: debugPayload.routeMetrics.curvature,
+      })
+      rebuildNavDebugPoints(debugPayload)
+    }
+
+    const routeStartNav = nearestReachablePointInComponent(fromNav, fromNav, graph, {
+      clearance: 0.5,
+      travelWeight: 0,
+      targetWeight: 1.0,
+      targetSlack: 0.8,
+    })
+    if (!routeStartNav) {
+      publishDebug()
       return
     }
 
+    const snappedOriginScene = navToScenePoint(routeStartNav)
+    debugPayload.originNav = routeStartNav.clone()
+    debugPayload.originScene = snappedOriginScene.clone()
+
+    const startSnapDistSq = snappedOriginScene.distanceToSquared(fromScene)
+    if (startSnapDistSq > 0.04) {
+      navOriginPt.current = snappedOriginScene.clone()
+
+      if (navMarkersRef.current.length > 0) {
+        const oldOrigin = navMarkersRef.current.shift()
+        oldOrigin.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+        R.current.scene?.remove(oldOrigin)
+      }
+
+      const newOriginMarker = addNavMarker(snappedOriginScene, 0x22cc44, 'origin')
+      if (newOriginMarker && navMarkersRef.current[navMarkersRef.current.length - 1] === newOriginMarker) {
+        navMarkersRef.current.pop()
+        navMarkersRef.current.unshift(newOriginMarker)
+      }
+    }
+
+    const routeTargetNav = nearestReachablePointInComponent(routeStartNav, toNav, graph, {
+      clearance: 0.5,
+      travelWeight: 0.14,
+      targetWeight: 1.0,
+      targetSlack: 1.6,
+    })
+    if (!routeTargetNav) {
+      publishDebug()
+      return
+    }
+
+    debugPayload.snappedDestNav = routeTargetNav.clone()
+
+    const waypointsNav = findPath(routeStartNav.clone(), routeTargetNav.clone(), graph, {
+      turnPenalty: 3.2,
+      centerWeight: 0.45,
+      axisPenaltyWeight: 0.12,
+      maxLengthRatio: 1.1,
+    })
+
+    const snappedDestScene = navToScenePoint(routeTargetNav)
+    debugPayload.snappedDestScene = snappedDestScene.clone()
+    const snapDistSq = snappedDestScene.distanceToSquared(toScene)
+    if (snapDistSq > 0.04) {
+      navDestPt.current = snappedDestScene.clone()
+      while (navMarkersRef.current.length > 1) {
+        const old = navMarkersRef.current.pop()
+        old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+        R.current.scene?.remove(old)
+      }
+      addNavMarker(snappedDestScene, 0xff3333, 'dest')
+    }
+
+    if (!waypointsNav || waypointsNav.length < 2) {
+      publishDebug()
+      return
+    }
+
+    const routeStartScene = navToScenePoint(routeStartNav)
     const routeTargetScene = navToScenePoint(routeTargetNav)
-    const waypoints = waypointsNav.map(p => navToScenePoint(p.clone()))
+    const rawWaypoints = waypointsNav.map(p => navToScenePoint(p.clone()))
+    debugPayload.navRawWaypoints = rawWaypoints.map(p => p.clone())
+    debugPayload.navMetrics = computeRouteMetrics(rawWaypoints)
 
     /* Flatten Y to the building floor level */
-    const floorY = Math.min(fromScene.y, routeTargetScene.y) + 0.15
-    waypoints.forEach(p => { p.y = floorY })
+    const floorY = Math.min(routeStartScene.y, routeTargetScene.y) + 0.15
+    rawWaypoints.forEach(p => { p.y = floorY })
 
-    const routePoints = dedupePolylinePoints(waypoints)
-    if (routePoints.length < 2) return
+    const routePoints = dedupePolylinePoints(simplifyOrthogonalPolyline(rawWaypoints, 0.18, graph))
+    if (routePoints.length >= 2) {
+      routePoints[0].copy(rawWaypoints[0])
+      routePoints[routePoints.length - 1].copy(rawWaypoints[rawWaypoints.length - 1])
+    }
+    debugPayload.routeScenePoints = routePoints.map(p => p.clone())
+    debugPayload.routeMetrics = computeRouteMetrics(routePoints)
+    if (routePoints.length < 2) {
+      publishDebug()
+      return
+    }
+
+    publishDebug()
 
     const { dists, total: pathLen } = polylineDistances(routePoints)
 
@@ -1199,9 +1903,14 @@ export default function ThreeViewer() {
 
     /* Frame camera to route extents only for maximum readable route zoom. */
     const framePoints = [...routePoints]
-    framePoints.push(fromScene.clone())
+    framePoints.push((navOriginPt.current ?? fromScene).clone())
     framePoints.push((navDestPt.current ?? routeTargetScene).clone())
-    const routeFrame = fitRouteCameraTopDown(framePoints, R.current.camera, 1.0)
+    const routeFrame = fitRouteCameraToView(
+      framePoints,
+      R.current.camera,
+      R.current.controls,
+      ROUTE_FRAME_PAD_MULT,
+    )
     if (routeFrame) {
       startCamAnim(routeFrame.pos, routeFrame.target)
     }
@@ -1221,6 +1930,25 @@ export default function ThreeViewer() {
     navOriginPt.current = originPt
     setNavOrigin('Entrada')
     addNavMarker(originPt, 0x22cc44, 'origin')
+    setNavDebugInfo({
+      originScene: toDebugVec(originPt),
+      destSceneInput: null,
+      snappedDestScene: null,
+      originNav: toDebugVec(sceneToNavPoint(originPt)),
+      destNavInput: null,
+      snappedDestNav: null,
+      navWaypointsCount: 0,
+      routePointsCount: 0,
+      navWaypointsSample: [],
+      routePointsSample: [],
+    })
+    rebuildNavDebugPoints({
+      originScene: originPt.clone(),
+      destSceneInput: null,
+      snappedDestScene: null,
+      navRawWaypoints: [],
+      routeScenePoints: [],
+    })
     setNavMode(true)
   }
 
@@ -1232,9 +1960,8 @@ export default function ThreeViewer() {
 
     if (navMode) {
       /* Navigate to this piece */
-      const center = getEntryWorldCenter(entry, 'full')
+      const center = getEntryWorldCenter(entry, 'focus')
       const pt = center.clone()
-      pt.z += ROUTE_CLICK_Z_OFFSET
 
       navDestPt.current = pt
       setNavDest(entry.name)
@@ -1269,16 +1996,13 @@ export default function ThreeViewer() {
     setSelectedName(entry.name)
     setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
     showOnlyLabel(entry.key)
-    const focusPoint = getEntryWorldCenter(entry, 'focus')
-    const { bbox, pos: camPos, target: camTarget } = fitEntryCameraTopDown(entry, camera, SELECT_CAM_PAD, focusPoint)
+    const anchorPoint = getEntrySelectionAnchorWorld(entry)
+    const { pos: camPos, target: camTarget, liftHeight } = fitEntryCameraUsingAnchor(entry, camera, anchorPoint, SELECT_CAM_PAD)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
-    const pieceSize = bbox.getSize(new THREE.Vector3())
-    const maxSz = Math.max(pieceSize.x, pieceSize.y, pieceSize.z, 0.5)
-    const liftHeight = Math.min(SELECT_LIFT_MAX, Math.max(maxSz * SELECT_LIFT_FACTOR, SELECT_LIFT_MIN))
     entry._liftTimer = setTimeout(() => {
       if (selectedRef.current === entry)
-        startMeshAnim(entry, liftLocalTarget(entry, liftHeight), ANIM_LIFT, easeInOutQuart)
+        startMeshAnim(entry, liftLocalTarget(entry, liftHeight, anchorPoint), ANIM_LIFT, easeInOutQuart)
     }, ANIM_CAM * LIFT_DELAY)
   }
 
@@ -1387,16 +2111,13 @@ export default function ThreeViewer() {
     setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
     showOnlyLabel(entry.key)
 
-    const hitPoint = hits[0].point.clone()
-    const { bbox, pos: camPos, target: camTarget } = fitEntryCameraTopDown(entry, camera, SELECT_CAM_PAD, hitPoint)
+    const anchorPoint = getEntrySelectionAnchorWorld(entry)
+    const { pos: camPos, target: camTarget, liftHeight } = fitEntryCameraUsingAnchor(entry, camera, anchorPoint, SELECT_CAM_PAD)
     startCamAnim(camPos, camTarget)
     clearIdleTimer()
-    const pieceSize = bbox.getSize(new THREE.Vector3())
-    const maxSz     = Math.max(pieceSize.x, pieceSize.y, pieceSize.z, 0.5)
-    const liftHeight = Math.min(SELECT_LIFT_MAX, Math.max(maxSz * SELECT_LIFT_FACTOR, SELECT_LIFT_MIN))
     entry._liftTimer = setTimeout(() => {
       if (selectedRef.current === entry)
-        startMeshAnim(entry, liftLocalTarget(entry, liftHeight), ANIM_LIFT, easeInOutQuart)
+        startMeshAnim(entry, liftLocalTarget(entry, liftHeight, anchorPoint), ANIM_LIFT, easeInOutQuart)
     }, ANIM_CAM * LIFT_DELAY)
   }
 
@@ -1769,7 +2490,9 @@ export default function ThreeViewer() {
     modelCenterRef.current.set(0, 0, 0)
     clearRouteVisuals()
     clearNavMarkers()
+    clearNavDebugPoints()
     clearNavDebug()
+    setNavDebugInfo(null)
 
     const modelLoader = new GLTFLoader()
     if (dracoLoaderRef.current) modelLoader.setDRACOLoader(dracoLoaderRef.current)
@@ -1970,6 +2693,43 @@ export default function ThreeViewer() {
             if (navGeo) {
               const graph = buildNavGraph(navGeo, navMatrix)
               navGraphRef.current = graph
+
+              const debugGroup = new THREE.Group()
+
+              const navFillGeo = navGeo.clone()
+              navFillGeo.applyMatrix4(navMatrix)
+              const navFillMesh = new THREE.Mesh(
+                navFillGeo,
+                new THREE.MeshBasicMaterial({
+                  color: 0x14b8a6,
+                  transparent: true,
+                  opacity: 0.12,
+                  side: THREE.DoubleSide,
+                  depthTest: false,
+                  depthWrite: false,
+                }),
+              )
+              navFillMesh.renderOrder = 860
+
+              const navWireGeo = navFillGeo.clone()
+              const navWireMesh = new THREE.Mesh(
+                navWireGeo,
+                new THREE.MeshBasicMaterial({
+                  color: 0x67e8f9,
+                  transparent: true,
+                  opacity: 0.58,
+                  wireframe: true,
+                  depthTest: false,
+                  depthWrite: false,
+                }),
+              )
+              navWireMesh.renderOrder = 861
+
+              debugGroup.add(navFillMesh)
+              debugGroup.add(navWireMesh)
+              debugGroup.visible = showNavDebugLiveRef.current && navModeLiveRef.current
+              scene.add(debugGroup)
+              navDebugRef.current = debugGroup
             }
           })
         }
@@ -2004,6 +2764,14 @@ export default function ThreeViewer() {
     controls.minPolarAngle = 0
     controls.maxPolarAngle = Math.PI * 0.88
   }, [navActive])
+
+  useEffect(() => {
+    navModeLiveRef.current = navMode
+    showNavDebugLiveRef.current = showNavDebug
+    const visible = navMode && showNavDebug
+    if (navDebugRef.current) navDebugRef.current.visible = visible
+    if (navDebugPointsRef.current) navDebugPointsRef.current.visible = visible
+  }, [navMode, showNavDebug])
 
   useEffect(() => {
     if (meshes.current.length === 0) return
@@ -2228,12 +2996,87 @@ export default function ThreeViewer() {
                 </div>
               )}
 
+              <div className="nav-debug-section">
+                <button
+                  className={`nav-debug-toggle${showNavDebug ? ' is-on' : ''}`}
+                  onClick={() => setShowNavDebug(v => !v)}
+                >
+                  {showNavDebug ? 'Ocultar navmesh y puntos' : 'Mostrar navmesh y puntos usados'}
+                </button>
+
+                {showNavDebug && (
+                  <div className="nav-debug-card">
+                    <div className="nav-debug-row">
+                      <span>Origen escena</span>
+                      <strong>{formatDebugVec(navDebugInfo?.originScene)}</strong>
+                    </div>
+                    <div className="nav-debug-row">
+                      <span>Destino clic escena</span>
+                      <strong>{formatDebugVec(navDebugInfo?.destSceneInput)}</strong>
+                    </div>
+                    <div className="nav-debug-row">
+                      <span>Destino ajustado escena</span>
+                      <strong>{formatDebugVec(navDebugInfo?.snappedDestScene)}</strong>
+                    </div>
+                    <div className="nav-debug-row">
+                      <span>Origen nav</span>
+                      <strong>{formatDebugVec(navDebugInfo?.originNav)}</strong>
+                    </div>
+                    <div className="nav-debug-row">
+                      <span>Destino clic nav</span>
+                      <strong>{formatDebugVec(navDebugInfo?.destNavInput)}</strong>
+                    </div>
+                    <div className="nav-debug-row">
+                      <span>Destino ajustado nav</span>
+                      <strong>{formatDebugVec(navDebugInfo?.snappedDestNav)}</strong>
+                    </div>
+
+                    <div className="nav-debug-list">
+                      <span className="nav-debug-list-title">
+                        Path nav base ({navDebugInfo?.navWaypointsCount ?? 0})
+                      </span>
+                      <span className="nav-debug-list-meta">
+                        L {Number(navDebugInfo?.navLength ?? 0).toFixed(2)} | T {navDebugInfo?.navTurns ?? 0} | C {Number(navDebugInfo?.navCurvature ?? 0).toFixed(2)}
+                      </span>
+                      {(navDebugInfo?.navWaypointsSample?.length ?? 0) > 0 ? (
+                        navDebugInfo.navWaypointsSample.map((p, idx) => (
+                          <span key={`nav-${idx}`} className="nav-debug-list-item">
+                            {idx + 1}. {formatDebugVec(p)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="nav-debug-list-empty">Sin puntos</span>
+                      )}
+                    </div>
+
+                    <div className="nav-debug-list">
+                      <span className="nav-debug-list-title">
+                        Ruta final render ({navDebugInfo?.routePointsCount ?? 0})
+                      </span>
+                      <span className="nav-debug-list-meta">
+                        L {Number(navDebugInfo?.routeLength ?? 0).toFixed(2)} | T {navDebugInfo?.routeTurns ?? 0} | C {Number(navDebugInfo?.routeCurvature ?? 0).toFixed(2)}
+                      </span>
+                      {(navDebugInfo?.routePointsSample?.length ?? 0) > 0 ? (
+                        navDebugInfo.routePointsSample.map((p, idx) => (
+                          <span key={`route-${idx}`} className="nav-debug-list-item">
+                            {idx + 1}. {formatDebugVec(p)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="nav-debug-list-empty">Sin puntos</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Change destination button */}
               {navDest && (
                 <button
                   className="nav-change-dest-btn"
                   onClick={() => {
                     clearRouteVisuals()
+                    clearNavDebugPoints()
                     /* Remove dest markers, keep origin marker */
                     while (navMarkersRef.current.length > 1) {
                       const old = navMarkersRef.current.pop()
@@ -2244,6 +3087,28 @@ export default function ThreeViewer() {
                     setNavDest(null)
                     setNavActive(false)
                     setLabelsVisible(true)
+                    const originNow = navOriginPt.current
+                    setNavDebugInfo({
+                      originScene: toDebugVec(originNow),
+                      destSceneInput: null,
+                      snappedDestScene: null,
+                      originNav: toDebugVec(originNow ? sceneToNavPoint(originNow) : null),
+                      destNavInput: null,
+                      snappedDestNav: null,
+                      navWaypointsCount: 0,
+                      routePointsCount: 0,
+                      navWaypointsSample: [],
+                      routePointsSample: [],
+                    })
+                    if (originNow) {
+                      rebuildNavDebugPoints({
+                        originScene: originNow.clone(),
+                        destSceneInput: null,
+                        snappedDestScene: null,
+                        navRawWaypoints: [],
+                        routeScenePoints: [],
+                      })
+                    }
                   }}
                 >
                   <MapPin size={14} />

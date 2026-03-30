@@ -342,6 +342,107 @@ body {
   flex-shrink: 0;
 }
 
+/* ── Debug block ── */
+.nav-debug-section {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nav-debug-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.86);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.nav-debug-toggle:hover {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #dbeafe;
+}
+.nav-debug-toggle.is-on {
+  background: rgba(20, 184, 166, 0.22);
+  border-color: rgba(45, 212, 191, 0.55);
+  color: #99f6e4;
+}
+.nav-debug-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(6, 10, 20, 0.55);
+}
+.nav-debug-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-debug-row span {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+}
+.nav-debug-row strong {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-debug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(255,255,255,0.12);
+}
+.nav-debug-list-title {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #93c5fd;
+}
+.nav-debug-list-meta {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(153, 246, 228, 0.88);
+}
+.nav-debug-list-item {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(255,255,255,0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-debug-list-empty {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+}
+
 /* ── Change destination button ── */
 .nav-change-dest-btn {
   margin-top: 10px;
