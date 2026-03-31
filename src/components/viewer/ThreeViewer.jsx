@@ -8,13 +8,13 @@ import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
   Search, X, Layers, Building2, RotateCcw, Info, Navigation2, XCircle,
-  MapPin, Crosshair, ArrowRight,
+  MapPin, Crosshair, ArrowRight, Eye, EyeOff,
 } from 'lucide-react'
 import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
 
 const MODELS = [
-  { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
-  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_PA.glb', label: 'Planta Alta',    short: 'PA', entryName: 'Sólido27-1', origin: [12.63, -1.60, 31.42] },
+  { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
+  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_PA.glb', label: 'Planta Alta',    short: 'PA', entryName: 'Sólido27-1', origin: [22.3, -1.60, 29] },
 ]
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
@@ -27,7 +27,10 @@ const ANIM_LIFT    = 700
 const LIFT_DELAY   = 0.58
 const HOVER_LIFT   = 2.4
 const HOVER_OUT    = 1.3
-const SELECT_LIFT_FIXED = 1.0
+const SELECT_LIFT_FIXED = 0.68
+const SELECT_LIFT_REF_SIZE = 12
+const SELECT_LIFT_MIN = 0.22
+const SELECT_LIFT_MAX = 0.92
 const SELECT_CAMERA_FIXED_DIST = 18
 const IDLE_TIMEOUT = 30000  // ms — inactividad para regresar a vista general
 const SELECT_CAM_PAD = 1.003
@@ -38,8 +41,6 @@ const ROUTE_FRAME_MARGIN_MAX = 1.35
 const ROUTE_FRAME_MIN_SPAN = 1.8
 const ROUTE_INDICATOR_COLOR = 0x00eaff
 const ROUTE_CLICK_Z_OFFSET = 20
-const NAV_DEBUG_SAMPLE_MAX = 18
-const NAV_DEBUG_POINTS_MAX = 120
 const ORTHO_AXIS_SNAP_ABS = 0.55
 const ORTHO_AXIS_SNAP_RATIO = 0.14
 const ORTHO_ZIGZAG_SHORT_SEG = 1.8
@@ -49,6 +50,10 @@ const ENABLE_SHADOWS = false
 const LABEL_UPDATE_FPS = 24
 const POINTER_MOVE_INTERVAL_MS = 50
 const DEV_STATS_LOG_INTERVAL_MS = 4000
+const LABEL_OVERLAP_MIN_DIST = 34
+const LABEL_OVERLAP_ITER_LOAD = 24
+const LABEL_OVERLAP_ITER_DYNAMIC = 10
+const LABEL_MOVE_LERP = 0.52
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -222,6 +227,132 @@ function formatEntryName(name) {
     .trim()
 }
 
+function parseFirstJCodeNumber(value) {
+  if (!value) return null
+  const match = value.match(/\bJ[\s_-]?(\d{1,3})\b/i)
+  if (!match) return null
+  const codeNum = Number.parseInt(match[1], 10)
+  return Number.isFinite(codeNum) ? codeNum : null
+}
+
+function formatJCode(codeNum) {
+  return `J-${String(codeNum).padStart(3, '0')}`
+}
+
+function getRangeGap(minA, maxA, minB, maxB) {
+  if (maxA < minB) return minB - maxA
+  if (maxB < minA) return minA - maxB
+  return 0
+}
+
+function buildConsecutiveJGroups(entries) {
+  const bboxCache = new Map()
+
+  function getEntryBoundsCached(entry) {
+    const cached = bboxCache.get(entry.key)
+    if (cached) return cached
+    const bounds = getEntryBounds(entry, 'full').clone()
+    bboxCache.set(entry.key, bounds)
+    return bounds
+  }
+
+  function areEntriesAdjacent(entryA, entryB) {
+    if (!entryA || !entryB) return false
+
+    const bbA = getEntryBoundsCached(entryA)
+    const bbB = getEntryBoundsCached(entryB)
+    if (bbA.isEmpty() || bbB.isEmpty()) return false
+
+    const sizeA = bbA.getSize(new THREE.Vector3())
+    const sizeB = bbB.getSize(new THREE.Vector3())
+    const minPlanarSize = Math.max(
+      0.5,
+      Math.min(
+        Math.max(sizeA.x, sizeA.z),
+        Math.max(sizeB.x, sizeB.z),
+      ),
+    )
+
+    const planarTol = THREE.MathUtils.clamp(minPlanarSize * 0.16, 0.25, 1.1)
+    const yTol = THREE.MathUtils.clamp((sizeA.y + sizeB.y) * 0.25, 0.35, 1.5)
+
+    const xGap = getRangeGap(bbA.min.x, bbA.max.x, bbB.min.x, bbB.max.x)
+    const yGap = getRangeGap(bbA.min.y, bbA.max.y, bbB.min.y, bbB.max.y)
+    const zGap = getRangeGap(bbA.min.z, bbA.max.z, bbB.min.z, bbB.max.z)
+
+    if (yGap > yTol) return false
+
+    const axisTouch =
+      (xGap <= planarTol && zGap <= (planarTol * 0.35))
+      || (zGap <= planarTol && xGap <= (planarTol * 0.35))
+
+    if (axisTouch) return true
+
+    const planarGap = Math.sqrt((xGap * xGap) + (zGap * zGap))
+    return planarGap <= (planarTol * 0.75)
+  }
+
+  const codes = []
+  entries.forEach(entry => {
+    const codeNum = parseFirstJCodeNumber(entry.name)
+      ?? parseFirstJCodeNumber(entry.rawName ?? '')
+    if (codeNum == null) return
+    codes.push({ key: entry.key, codeNum, entry })
+  })
+
+  if (codes.length < 2) {
+    return { entryToGroup: new Map(), groups: new Map() }
+  }
+
+  codes.sort((a, b) => a.codeNum - b.codeNum || a.key.localeCompare(b.key))
+
+  const clusters = []
+  let current = [codes[0]]
+  for (let i = 1; i < codes.length; i++) {
+    const prev = current[current.length - 1]
+    const next = codes[i]
+    const isConsecutive = next.codeNum <= (prev.codeNum + 1)
+    const adjacent = areEntriesAdjacent(prev.entry, next.entry)
+    if (isConsecutive && adjacent) {
+      current.push(next)
+    } else {
+      clusters.push(current)
+      current = [next]
+    }
+  }
+  clusters.push(current)
+
+  const entryToGroup = new Map()
+  const groups = new Map()
+
+  let idx = 0
+  clusters.forEach(cluster => {
+    if (cluster.length < 2) return
+
+    idx += 1
+    const start = cluster[0].codeNum
+    const end = cluster[cluster.length - 1].codeNum
+    const memberKeys = cluster.map(item => item.key)
+    const representativeKey = memberKeys[Math.floor(memberKeys.length / 2)] ?? memberKeys[0]
+    const collapsedText = start === end
+      ? formatJCode(start)
+      : `${formatJCode(start)} - ${formatJCode(end)}`
+    const key = `jgroup-${start}-${end}-${idx}`
+
+    groups.set(key, {
+      key,
+      start,
+      end,
+      memberKeys,
+      representativeKey,
+      collapsedText,
+    })
+    memberKeys.forEach(memberKey => entryToGroup.set(memberKey, key))
+  })
+
+  return { entryToGroup, groups }
+}
+
 function easeInOutCubic(t) { return t < 0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2 }
 function easeOutExpo(t)    { return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t) }
 function easeInOutQuart(t) { return t < 0.5 ? 8*t*t*t*t : 1-Math.pow(-2*t+2,4)/2 }
@@ -231,69 +362,6 @@ function toNDC(e, canvas) {
   const cx = e.clientX - rect.left
   const cy = e.clientY - rect.top
   return { nx:(cx/rect.width)*2-1, ny:-(cy/rect.height)*2+1, cx, cy }
-}
-
-function toDebugVec(point) {
-  if (!point) return null
-  return {
-    x: Math.round(point.x * 100) / 100,
-    y: Math.round(point.y * 100) / 100,
-    z: Math.round(point.z * 100) / 100,
-  }
-}
-
-function sampleDebugVecList(points, max = NAV_DEBUG_SAMPLE_MAX) {
-  if (!points || points.length === 0) return []
-  if (points.length <= max) return points.map(toDebugVec)
-
-  const out = []
-  const last = points.length - 1
-  const steps = max - 1
-  for (let i = 0; i <= steps; i++) {
-    const idx = Math.round((i / steps) * last)
-    out.push(toDebugVec(points[idx]))
-  }
-  return out
-}
-
-function formatDebugVec(point) {
-  if (!point) return '-'
-  return `x ${point.x.toFixed(2)}  y ${point.y.toFixed(2)}  z ${point.z.toFixed(2)}`
-}
-
-function computeRouteMetrics(points) {
-  if (!points || points.length < 2) {
-    return { length: 0, turns: 0, curvature: 0 }
-  }
-
-  let length = 0
-  let turns = 0
-  let curvature = 0
-
-  for (let i = 1; i < points.length; i++) {
-    length += points[i - 1].distanceTo(points[i])
-  }
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const v1 = new THREE.Vector3().subVectors(points[i], points[i - 1])
-    const v2 = new THREE.Vector3().subVectors(points[i + 1], points[i])
-    v1.y = 0
-    v2.y = 0
-
-    const len1 = v1.length()
-    const len2 = v2.length()
-    if (len1 <= 1e-5 || len2 <= 1e-5) continue
-
-    let cos = v1.dot(v2) / (len1 * len2)
-    if (cos > 1) cos = 1
-    if (cos < -1) cos = -1
-    const heading = Math.acos(cos) * (180 / Math.PI)
-
-    if (heading >= 30) turns += 1
-    curvature += heading / 180
-  }
-
-  return { length, turns, curvature }
 }
 
 const _raycaster = new THREE.Raycaster()
@@ -880,6 +948,13 @@ function getEntrySelectionAnchorWorld(entry) {
   return getEntryLabelAnchorWorld(entry)
 }
 
+function getEntryDynamicLiftHeight(entry, maxLiftByCamera = Infinity) {
+  const dominantSize = Math.max(entry?.dominantSize ?? 0.001, 0.001)
+  const scaledLift = SELECT_LIFT_FIXED * (SELECT_LIFT_REF_SIZE / dominantSize)
+  const dynamicLift = THREE.MathUtils.clamp(scaledLift, SELECT_LIFT_MIN, SELECT_LIFT_MAX)
+  return Math.min(dynamicLift, maxLiftByCamera)
+}
+
 function fitEntryCameraUsingAnchor(entry, camera, anchorWorld, padMult = 1.02) {
   const frame = getEntryFrameFromSolids(entry)
   const baseBbox = frame.bbox.clone()
@@ -895,7 +970,7 @@ function fitEntryCameraUsingAnchor(entry, camera, anchorWorld, padMult = 1.02) {
   /* Fixed perpendicular distance for every piece. */
   const dist = Math.max(1.2, SELECT_CAMERA_FIXED_DIST * padMult)
   const maxLiftByCamera = Math.max(0, dist - 0.6)
-  const liftHeight = Math.min(SELECT_LIFT_FIXED, maxLiftByCamera)
+  const liftHeight = getEntryDynamicLiftHeight(entry, maxLiftByCamera)
 
   const liftedBox = baseBbox.clone()
   liftedBox.max.y = baseBbox.max.y + liftHeight
@@ -913,8 +988,10 @@ export default function ThreeViewer() {
   const dracoLoaderRef = useRef(null)
   const ktx2LoaderRef = useRef(null)
   const invalidateRenderRef = useRef(() => {})
+  const updateLabelsLayoutRef = useRef(() => {})
   const loadingProxyRef = useRef(null)
   const loadingLiveRef = useRef(true)
+  const labelsEnabledRef = useRef(true)
 
   const R = useRef({
     renderer: null, scene: null, camera: null,
@@ -927,10 +1004,12 @@ export default function ThreeViewer() {
   const meshes      = useRef([])
   const pickablesRef = useRef([])
   const focusPickablesRef = useRef([])
+  const isolatedPickablesRef = useRef([])
   const pickableToEntryRef = useRef(new Map())
   const animMap     = useRef(new Map())
   const hoverRef    = useRef(null)
   const selectedRef = useRef(null)
+  const isolatedEntryRef = useRef(null)
   const camAnim     = useRef({
     active: false, t: 0,
     fromTarget: new THREE.Vector3(), toTarget: new THREE.Vector3(),
@@ -944,6 +1023,10 @@ export default function ThreeViewer() {
   const handlersRef = useRef({ onPointerMove: null, onClick: null, onLabelClick: null })
   const idleTimerRef = useRef(null)   // timeout de inactividad 30s
   const labelsDataRef = useRef([])
+  const labelsByKeyRef = useRef(new Map())
+  const entryToLabelGroupRef = useRef(new Map())
+  const labelGroupsRef = useRef(new Map())
+  const expandedLabelGroupRef = useRef(null)
   const tooltipRef = useRef({ visible:false, name:'', x:0, y:0 })
   const lastPointerMoveRef = useRef(0)
 
@@ -954,14 +1037,13 @@ export default function ThreeViewer() {
   const [search,        setSearch]        = useState('')
   const [selectedName,  setSelectedName]  = useState(null)
   const [selectedStatus, setSelectedStatus] = useState(null)
+  const [labelsEnabled, setLabelsEnabled] = useState(true)
 
   /* ── Navigation state ── */
   const navGraphRef  = useRef(null)      // built nav graph
   const navLineRef   = useRef(null)      // THREE.Mesh for route tube
   const navDotRef    = useRef(null)      // animated dot group
   const navAnimRef   = useRef({ active: false, t: 0, pathLen: 0, points: [] })
-  const navDebugRef  = useRef(null)      // debug wireframe mesh
-  const navDebugPointsRef = useRef(null)  // debug points/lines for route pipeline
   const navMarkersRef = useRef([])       // origin/dest marker meshes
   const navOriginPt  = useRef(null)      // THREE.Vector3 — clicked origin (building space)
   const navDestPt    = useRef(null)      // THREE.Vector3 — clicked dest (building space)
@@ -971,10 +1053,7 @@ export default function ThreeViewer() {
   const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
   const [navDest,      setNavDest]       = useState(null)    // display label for dest
   const [navActive,    setNavActive]     = useState(false)   // route displayed
-  const [showNavDebug, setShowNavDebug]  = useState(false)
-  const [navDebugInfo, setNavDebugInfo]  = useState(null)
   const navModeLiveRef = useRef(false)
-  const showNavDebugLiveRef = useRef(false)
   const navLoadStateRef = useRef({ modelIndex: -1, loading: false, promise: null })
 
   const [loadProgress, setLoadProgress] = useState({
@@ -1022,38 +1101,146 @@ export default function ThreeViewer() {
       lbl.lineEl?.remove()
     })
     labelsDataRef.current = []
+    labelsByKeyRef.current.clear()
+    entryToLabelGroupRef.current.clear()
+    labelGroupsRef.current.clear()
+    expandedLabelGroupRef.current = null
     meshes.current.forEach(entry => { entry._label = null })
+  }
+
+  function measureLabelSize(lbl) {
+    if (!lbl?.el) return
+    const rect = lbl.el.getBoundingClientRect()
+    lbl.w = rect.width || 80
+    lbl.h = rect.height || 22
+  }
+
+  function setLabelText(lbl, text) {
+    if (!lbl) return
+    const nextText = text ?? ''
+    lbl.name = nextText
+    if (lbl.textEl && lbl.textEl.textContent !== nextText) {
+      lbl.textEl.textContent = nextText
+      measureLabelSize(lbl)
+    }
+  }
+
+  function collapseAllLabelGroups() {
+    expandedLabelGroupRef.current = null
+    labelGroupsRef.current.forEach(group => {
+      group.memberKeys.forEach(memberKey => {
+        const lbl = labelsByKeyRef.current.get(memberKey)
+        if (!lbl) return
+        if (memberKey === group.representativeKey) {
+          lbl._hidden = false
+          setLabelText(lbl, group.collapsedText)
+        } else {
+          lbl._hidden = true
+          setLabelText(lbl, lbl.entryLabelName)
+        }
+      })
+    })
+  }
+
+  function expandLabelGroup(groupKey) {
+    const targetGroup = labelGroupsRef.current.get(groupKey)
+    if (!targetGroup) return false
+
+    collapseAllLabelGroups()
+    targetGroup.memberKeys.forEach(memberKey => {
+      const lbl = labelsByKeyRef.current.get(memberKey)
+      if (!lbl) return
+      lbl._hidden = false
+      setLabelText(lbl, lbl.entryLabelName)
+    })
+    expandedLabelGroupRef.current = groupKey
+    return true
+  }
+
+  function showLabelsForSelection(entry) {
+    const el = R.current.labelsOverlay
+    if (!el || !entry) return
+
+    labelsDataRef.current.forEach(lbl => { lbl._hidden = true })
+    const groupKey = entryToLabelGroupRef.current.get(entry.key)
+
+    if (groupKey && labelGroupsRef.current.has(groupKey)) {
+      const expanded = expandLabelGroup(groupKey)
+      if (expanded) {
+        const members = new Set(labelGroupsRef.current.get(groupKey).memberKeys)
+        labelsDataRef.current.forEach(lbl => {
+          lbl._hidden = !members.has(lbl.key)
+        })
+      }
+    } else {
+      const lbl = labelsByKeyRef.current.get(entry.key)
+      if (lbl) {
+        lbl._hidden = false
+        setLabelText(lbl, lbl.entryLabelName)
+      }
+      expandedLabelGroupRef.current = null
+    }
+
+    el.style.opacity = labelsEnabledRef.current ? '1' : '0'
+    updateLabelsLayoutRef.current({ snap: true })
   }
 
   /* ── Muestra / oculta todas las etiquetas ── */
   function setLabelsVisible(visible) {
     const el = R.current.labelsOverlay
     if (!el) return
-    el.style.opacity = visible ? '1' : '0'
     /* When showing all, reset per-label hiding */
     if (visible) {
       labelsDataRef.current.forEach(lbl => { lbl._hidden = false })
+      collapseAllLabelGroups()
+      updateLabelsLayoutRef.current({ snap: true })
     }
-  }
-
-  /** Show only the label for `key`; hide all others */
-  function showOnlyLabel(key) {
-    const el = R.current.labelsOverlay
-    if (!el) return
-    el.style.opacity = '1'
-    labelsDataRef.current.forEach(lbl => {
-      lbl._hidden = lbl.key !== key
-    })
+    el.style.opacity = (visible && labelsEnabledRef.current) ? '1' : '0'
   }
 
   /** Show only labels whose keys are in `keys` set; hide the rest */
   function showOnlyLabels(keys) {
     const el = R.current.labelsOverlay
     if (!el) return
-    el.style.opacity = '1'
+    expandedLabelGroupRef.current = null
     labelsDataRef.current.forEach(lbl => {
       lbl._hidden = !keys.has(lbl.key)
     })
+    el.style.opacity = labelsEnabledRef.current ? '1' : '0'
+    updateLabelsLayoutRef.current({ snap: true })
+  }
+
+  function isolateSelectedEntry(entry = null) {
+    // OPT: hide all non-selected pieces so the clicked one is visually isolated.
+    isolatedEntryRef.current = entry
+    const isolate = !!entry
+
+    if (isolate) {
+      isolatedPickablesRef.current = getEntryMeshList(entry, 'full')
+    } else {
+      isolatedPickablesRef.current = []
+    }
+
+    meshes.current.forEach(item => {
+      item.mesh.visible = !isolate || item === entry
+    })
+    invalidateRenderRef.current()
+  }
+
+  function getActiveRayTargets(nav = false) {
+    if (nav) {
+      return pickablesRef.current.filter(mesh => mesh.visible)
+    }
+
+    if (isolatedEntryRef.current && isolatedPickablesRef.current.length > 0) {
+      return isolatedPickablesRef.current.filter(mesh => mesh.visible)
+    }
+
+    const baseTargets = focusPickablesRef.current.length > 0
+      ? focusPickablesRef.current
+      : pickablesRef.current
+
+    return baseTargets.filter(mesh => mesh.visible)
   }
 
   function commitTooltip(next) {
@@ -1144,11 +1331,13 @@ export default function ThreeViewer() {
     selectedRef.current = null
     setSelectedName(null)
     setSelectedStatus(null)
+    isolateSelectedEntry(null)
     setLabelsVisible(true)
   }
 
   function resetView() {
     if (selectedRef.current) deselectEntry(selectedRef.current)
+    isolateSelectedEntry(null)
     startCamAnim(R.current.defaultPos, R.current.defaultTarget)
     setLabelsVisible(true)
     clearIdleTimer()
@@ -1319,152 +1508,6 @@ export default function ThreeViewer() {
     return group
   }
 
-  function clearNavDebug() {
-    const scene = R.current.scene
-    if (navDebugRef.current) {
-      scene?.remove(navDebugRef.current)
-      navDebugRef.current.traverse(node => {
-        node.geometry?.dispose?.()
-        if (Array.isArray(node.material)) {
-          node.material.forEach(m => m?.dispose?.())
-        } else {
-          node.material?.dispose?.()
-        }
-      })
-      navDebugRef.current = null
-      invalidateRenderRef.current()
-    }
-  }
-
-  function clearNavDebugPoints() {
-    const scene = R.current.scene
-    if (!navDebugPointsRef.current) return
-    scene?.remove(navDebugPointsRef.current)
-    navDebugPointsRef.current.traverse(node => {
-      node.geometry?.dispose?.()
-      if (Array.isArray(node.material)) {
-        node.material.forEach(m => m?.dispose?.())
-      } else {
-        node.material?.dispose?.()
-      }
-    })
-    navDebugPointsRef.current = null
-    invalidateRenderRef.current()
-  }
-
-  function rebuildNavDebugPoints(data) {
-    clearNavDebugPoints()
-    const scene = R.current.scene
-    if (!scene || !data) return
-
-    const group = new THREE.Group()
-
-    const addSphere = (point, color, radius = 0.18) => {
-      if (!point) return
-      const sphere = new THREE.Mesh(
-        new THREE.SphereGeometry(radius, 14, 10),
-        new THREE.MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.98,
-          depthTest: false,
-          depthWrite: false,
-        }),
-      )
-      sphere.position.copy(point)
-      sphere.renderOrder = 1008
-      group.add(sphere)
-    }
-
-    const addPolyline = (points, color, opacity = 0.92) => {
-      if (!points || points.length < 2) return
-      const geo = new THREE.BufferGeometry().setFromPoints(points)
-      const line = new THREE.Line(
-        geo,
-        new THREE.LineBasicMaterial({
-          color,
-          transparent: true,
-          opacity,
-          depthTest: false,
-          depthWrite: false,
-        }),
-      )
-      line.renderOrder = 1007
-      group.add(line)
-    }
-
-    const addPointCloud = (points, color, radius = 0.1) => {
-      if (!points || points.length === 0) return
-      const cap = Math.min(points.length, NAV_DEBUG_POINTS_MAX)
-      for (let i = 0; i < cap; i++) {
-        addSphere(points[i], color, radius)
-      }
-    }
-
-    addSphere(data.originScene, 0x22c55e, 0.24)
-    addSphere(data.destSceneInput, 0xef4444, 0.24)
-    addSphere(data.snappedDestScene, 0xd946ef, 0.26)
-
-    if (data.navRawWaypoints?.length > 1) {
-      addPolyline(data.navRawWaypoints, 0x3b82f6, 0.95)
-      addPointCloud(data.navRawWaypoints, 0x60a5fa, 0.09)
-    }
-
-    if (data.routeScenePoints?.length > 1) {
-      addPolyline(data.routeScenePoints, 0xffc547, 0.95)
-      addPointCloud(data.routeScenePoints, 0xffdd7a, 0.11)
-    }
-
-    group.visible = showNavDebugLiveRef.current && navModeLiveRef.current
-    scene.add(group)
-    navDebugPointsRef.current = group
-    invalidateRenderRef.current()
-  }
-
-  function buildNavDebugOverlay(navGeo, navMatrix) {
-    const scene = R.current.scene
-    if (!scene || !navGeo) return
-
-    clearNavDebug()
-
-    const debugGroup = new THREE.Group()
-
-    const navFillGeo = navGeo.clone()
-    navFillGeo.applyMatrix4(navMatrix)
-    const navFillMesh = new THREE.Mesh(
-      navFillGeo,
-      new THREE.MeshBasicMaterial({
-        color: 0x14b8a6,
-        transparent: true,
-        opacity: 0.12,
-        side: THREE.DoubleSide,
-        depthTest: false,
-        depthWrite: false,
-      }),
-    )
-    navFillMesh.renderOrder = 860
-
-    const navWireGeo = navFillGeo.clone()
-    const navWireMesh = new THREE.Mesh(
-      navWireGeo,
-      new THREE.MeshBasicMaterial({
-        color: 0x67e8f9,
-        transparent: true,
-        opacity: 0.58,
-        wireframe: true,
-        depthTest: false,
-        depthWrite: false,
-      }),
-    )
-    navWireMesh.renderOrder = 861
-
-    debugGroup.add(navFillMesh)
-    debugGroup.add(navWireMesh)
-    debugGroup.visible = showNavDebugLiveRef.current && navModeLiveRef.current
-    scene.add(debugGroup)
-    navDebugRef.current = debugGroup
-  }
-
   function ensureNavGraphLoaded() {
     const scene = R.current.scene
     if (!scene) return Promise.resolve(null)
@@ -1519,7 +1562,6 @@ export default function ThreeViewer() {
 
           if (navGeo) {
             navGraphRef.current = buildNavGraph(navGeo, navMatrix)
-            buildNavDebugOverlay(navGeo, navMatrix)
           }
 
           updateLoadProgress({
@@ -1564,15 +1606,14 @@ export default function ThreeViewer() {
   function exitNavigation() {
     clearRouteVisuals()
     clearNavMarkers()
-    clearNavDebugPoints()
     navOriginPt.current = null
     navDestPt.current = null
-    setNavDebugInfo(null)
     setNavMode(false)
     setNavOrigin(null)
     setNavDest(null)
     setNavActive(false)
     if (selectedRef.current) deselectEntry(selectedRef.current)
+    isolateSelectedEntry(null)
     /* Restore all labels and return camera to default */
     setLabelsVisible(true)
     startCamAnim(R.current.defaultPos, R.current.defaultTarget)
@@ -1991,54 +2032,15 @@ export default function ThreeViewer() {
     const fromNav = sceneToNavPoint(fromScene)
     const toNav = sceneToNavPoint(toScene)
 
-    const debugPayload = {
-      originScene: fromScene.clone(),
-      destSceneInput: toScene.clone(),
-      snappedDestScene: null,
-      originNav: fromNav.clone(),
-      destNavInput: toNav.clone(),
-      snappedDestNav: null,
-      navRawWaypoints: [],
-      routeScenePoints: [],
-      navMetrics: { length: 0, turns: 0, curvature: 0 },
-      routeMetrics: { length: 0, turns: 0, curvature: 0 },
-    }
-    const publishDebug = () => {
-      setNavDebugInfo({
-        originScene: toDebugVec(debugPayload.originScene),
-        destSceneInput: toDebugVec(debugPayload.destSceneInput),
-        snappedDestScene: toDebugVec(debugPayload.snappedDestScene),
-        originNav: toDebugVec(debugPayload.originNav),
-        destNavInput: toDebugVec(debugPayload.destNavInput),
-        snappedDestNav: toDebugVec(debugPayload.snappedDestNav),
-        navWaypointsCount: debugPayload.navRawWaypoints.length,
-        routePointsCount: debugPayload.routeScenePoints.length,
-        navWaypointsSample: sampleDebugVecList(debugPayload.navRawWaypoints),
-        routePointsSample: sampleDebugVecList(debugPayload.routeScenePoints),
-        navLength: debugPayload.navMetrics.length,
-        navTurns: debugPayload.navMetrics.turns,
-        navCurvature: debugPayload.navMetrics.curvature,
-        routeLength: debugPayload.routeMetrics.length,
-        routeTurns: debugPayload.routeMetrics.turns,
-        routeCurvature: debugPayload.routeMetrics.curvature,
-      })
-      rebuildNavDebugPoints(debugPayload)
-    }
-
     const routeStartNav = nearestReachablePointInComponent(fromNav, fromNav, graph, {
       clearance: 0.5,
       travelWeight: 0,
       targetWeight: 1.0,
       targetSlack: 0.8,
     })
-    if (!routeStartNav) {
-      publishDebug()
-      return
-    }
+    if (!routeStartNav) return
 
     const snappedOriginScene = navToScenePoint(routeStartNav)
-    debugPayload.originNav = routeStartNav.clone()
-    debugPayload.originScene = snappedOriginScene.clone()
 
     const startSnapDistSq = snappedOriginScene.distanceToSquared(fromScene)
     if (startSnapDistSq > 0.04) {
@@ -2063,12 +2065,7 @@ export default function ThreeViewer() {
       targetWeight: 1.0,
       targetSlack: 1.6,
     })
-    if (!routeTargetNav) {
-      publishDebug()
-      return
-    }
-
-    debugPayload.snappedDestNav = routeTargetNav.clone()
+    if (!routeTargetNav) return
 
     const waypointsNav = findPath(routeStartNav.clone(), routeTargetNav.clone(), graph, {
       turnPenalty: 3.2,
@@ -2078,7 +2075,6 @@ export default function ThreeViewer() {
     })
 
     const snappedDestScene = navToScenePoint(routeTargetNav)
-    debugPayload.snappedDestScene = snappedDestScene.clone()
     const snapDistSq = snappedDestScene.distanceToSquared(toScene)
     if (snapDistSq > 0.04) {
       navDestPt.current = snappedDestScene.clone()
@@ -2090,16 +2086,11 @@ export default function ThreeViewer() {
       addNavMarker(snappedDestScene, 0xff3333, 'dest')
     }
 
-    if (!waypointsNav || waypointsNav.length < 2) {
-      publishDebug()
-      return
-    }
+    if (!waypointsNav || waypointsNav.length < 2) return
 
     const routeStartScene = navToScenePoint(routeStartNav)
     const routeTargetScene = navToScenePoint(routeTargetNav)
     const rawWaypoints = waypointsNav.map(p => navToScenePoint(p.clone()))
-    debugPayload.navRawWaypoints = rawWaypoints.map(p => p.clone())
-    debugPayload.navMetrics = computeRouteMetrics(rawWaypoints)
 
     /* Flatten Y to the building floor level */
     const floorY = Math.min(routeStartScene.y, routeTargetScene.y) + 0.15
@@ -2110,14 +2101,7 @@ export default function ThreeViewer() {
       routePoints[0].copy(rawWaypoints[0])
       routePoints[routePoints.length - 1].copy(rawWaypoints[rawWaypoints.length - 1])
     }
-    debugPayload.routeScenePoints = routePoints.map(p => p.clone())
-    debugPayload.routeMetrics = computeRouteMetrics(routePoints)
-    if (routePoints.length < 2) {
-      publishDebug()
-      return
-    }
-
-    publishDebug()
+    if (routePoints.length < 2) return
 
     const { dists, total: pathLen } = polylineDistances(routePoints)
 
@@ -2256,6 +2240,7 @@ export default function ThreeViewer() {
 
   function enterNavMode() {
     if (selectedRef.current) deselectEntry(selectedRef.current)
+    isolateSelectedEntry(null)
     navDestPt.current = null
     setNavDest(null)
     setNavActive(false)
@@ -2267,25 +2252,6 @@ export default function ThreeViewer() {
     navOriginPt.current = originPt
     setNavOrigin('Entrada')
     addNavMarker(originPt, 0x22cc44, 'origin')
-    setNavDebugInfo({
-      originScene: toDebugVec(originPt),
-      destSceneInput: null,
-      snappedDestScene: null,
-      originNav: toDebugVec(sceneToNavPoint(originPt)),
-      destNavInput: null,
-      snappedDestNav: null,
-      navWaypointsCount: 0,
-      routePointsCount: 0,
-      navWaypointsSample: [],
-      routePointsSample: [],
-    })
-    rebuildNavDebugPoints({
-      originScene: originPt.clone(),
-      destSceneInput: null,
-      snappedDestScene: null,
-      navRawWaypoints: [],
-      routeScenePoints: [],
-    })
     setNavMode(true)
 
     // OPT: navmesh is loaded lazily only when navigation is requested.
@@ -2326,6 +2292,17 @@ export default function ThreeViewer() {
       return
     }
 
+    const groupKey = entryToLabelGroupRef.current.get(entry.key)
+    if (groupKey && labelGroupsRef.current.has(groupKey)) {
+      // OPT: grouped labels expand first and do not trigger piece focus.
+      expandLabelGroup(groupKey)
+      const overlay = R.current.labelsOverlay
+      if (overlay) overlay.style.opacity = labelsEnabledRef.current ? '1' : '0'
+      updateLabelsLayoutRef.current({ snap: true })
+      invalidateRenderRef.current()
+      return
+    }
+
     /* Normal mode — select this piece */
     const prev = selectedRef.current
     if (prev === entry) {
@@ -2338,7 +2315,8 @@ export default function ThreeViewer() {
     selectedRef.current = entry
     setSelectedName(entry.name)
     setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
-    showOnlyLabel(entry.key)
+    showLabelsForSelection(entry)
+    isolateSelectedEntry(entry)
     const anchorPoint = getEntrySelectionAnchorWorld(entry)
     const { pos: camPos, target: camTarget, liftHeight } = fitEntryCameraUsingAnchor(entry, camera, anchorPoint, SELECT_CAM_PAD)
     startCamAnim(camPos, camTarget)
@@ -2357,9 +2335,7 @@ export default function ThreeViewer() {
     lastPointerMoveRef.current = now
     resetIdleTimer()   // cualquier movimiento reinicia el timer de 30s
     const { nx, ny, cx, cy } = toNDC(e, renderer.domElement)
-    const rayTargets = focusPickablesRef.current.length > 0
-      ? focusPickablesRef.current
-      : pickablesRef.current
+    const rayTargets = getActiveRayTargets(false)
     const hits     = doRaycast(nx, ny, camera, rayTargets)
     const prev     = hoverRef.current
     const hitEntry = hits.length > 0
@@ -2387,9 +2363,7 @@ export default function ThreeViewer() {
     const { camera, renderer, defaultPos, defaultTarget } = R.current
     if (!camera || !renderer || meshes.current.length === 0) return
     const { nx, ny } = toNDC(e, renderer.domElement)
-    const rayTargets = navMode
-      ? pickablesRef.current
-      : (focusPickablesRef.current.length > 0 ? focusPickablesRef.current : pickablesRef.current)
+    const rayTargets = getActiveRayTargets(navMode)
     const hits = doRaycast(nx, ny, camera, rayTargets)
 
     /* ── Navigation mode: click places origin / dest ── */
@@ -2452,7 +2426,8 @@ export default function ThreeViewer() {
     selectedRef.current = entry
     setSelectedName(entry.name)
     setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
-    showOnlyLabel(entry.key)
+    showLabelsForSelection(entry)
+    isolateSelectedEntry(entry)
 
     const anchorPoint = getEntrySelectionAnchorWorld(entry)
     const { pos: camPos, target: camTarget, liftHeight } = fitEntryCameraUsingAnchor(entry, camera, anchorPoint, SELECT_CAM_PAD)
@@ -2599,13 +2574,16 @@ export default function ThreeViewer() {
     /* ── Label overlay: proyección + anti-overlap cada frame ── */
     const _projV  = new THREE.Vector3()
     const _anchorW = new THREE.Vector3()
-    function updateLabelsOverlay() {
+    function updateLabelsOverlay(options = {}) {
+      const snap = options.snap === true
+      const resolveIterations = snap ? LABEL_OVERLAP_ITER_LOAD : LABEL_OVERLAP_ITER_DYNAMIC
       const labels = labelsDataRef.current
       if (labels.length === 0) return
       const cw = renderer.domElement.clientWidth
       const ch = renderer.domElement.clientHeight
       if (cw === 0 || ch === 0) return
-      const PAD = 10
+      const PAD = 8
+      const minDist = LABEL_OVERLAP_MIN_DIST
 
       /* 1 — Proyectar anclas a coordenadas de pantalla */
       for (const lbl of labels) {
@@ -2624,52 +2602,80 @@ export default function ThreeViewer() {
       /* 2 — Filtrar visibles, posición inicial sobre el ancla */
       const vis = []
       for (const lbl of labels) {
-        if (!lbl.onScreen || lbl._hidden) continue
+        if (!labelsEnabledRef.current || !lbl.onScreen || lbl._hidden) continue
         lbl.cx = lbl.anchorSX
         lbl.cy = lbl.anchorSY - 24
         vis.push(lbl)
       }
 
-      /* 3 — Resolver solapamientos: relaxation multi-pass en ambos ejes */
-      const MAX_ITER = 12
-      for (let iter = 0; iter < MAX_ITER; iter++) {
+      /* 3 — Resolver solapamientos con separación mínima */
+      for (let iter = 0; iter < resolveIterations; iter++) {
         let moved = false
         for (let i = 0; i < vis.length; i++) {
           const a = vis[i]
           for (let j = i + 1; j < vis.length; j++) {
             const b = vis[j]
-            const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(a.cx - b.cx)
-            const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs((a.cy - a.h / 2) - (b.cy - b.h / 2))
-            if (overlapX <= 0 || overlapY <= 0) continue
-            /* Push apart along the axis of least overlap */
+            const dx = a.cx - b.cx
+            const dy = a.cy - b.cy
+            const dist = Math.sqrt((dx * dx) + (dy * dy))
+            const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(dx)
+            const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs(dy)
+            const collisionByBox = overlapX > 0 && overlapY > 0
+            const collisionByDistance = dist < minDist
+
+            if (!collisionByBox && !collisionByDistance) continue
+
             moved = true
-            if (overlapX < overlapY) {
-              const shift = (overlapX / 2) + 1
-              if (a.cx <= b.cx) { a.cx -= shift; b.cx += shift }
-              else               { a.cx += shift; b.cx -= shift }
+            if (dist > 0.0001 && collisionByDistance) {
+              const push = ((minDist - dist) * 0.5) + 0.5
+              const nx = dx / dist
+              const ny = dy / dist
+              a.cx += nx * push
+              a.cy += ny * push
+              b.cx -= nx * push
+              b.cy -= ny * push
             } else {
-              const shift = (overlapY / 2) + 1
-              if (a.cy <= b.cy) { a.cy -= shift; b.cy += shift }
-              else               { a.cy += shift; b.cy -= shift }
+              if (overlapX >= overlapY) {
+                const shiftY = (overlapY * 0.5) + 1
+                if (a.cy <= b.cy) { a.cy -= shiftY; b.cy += shiftY }
+                else               { a.cy += shiftY; b.cy -= shiftY }
+              } else {
+                const shiftX = (overlapX * 0.5) + 1
+                if (a.cx <= b.cx) { a.cx -= shiftX; b.cx += shiftX }
+                else               { a.cx += shiftX; b.cx -= shiftX }
+              }
             }
           }
         }
         if (!moved) break
       }
 
-      /* 3b — Pass vertical de seguridad para reducir solapes residuales */
-      vis.sort((a, b) => a.cy - b.cy)
-      for (let i = 0; i < vis.length; i++) {
-        const a = vis[i]
-        for (let j = i + 1; j < vis.length; j++) {
-          const b = vis[j]
-          const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(a.cx - b.cx)
-          const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs((a.cy - a.h / 2) - (b.cy - b.h / 2))
-          if (overlapX <= 0 || overlapY <= 0) continue
-          b.cy += overlapY + 2
-          const side = a.cx <= b.cx ? 1 : -1
-          b.cx += side * Math.min(14, overlapX / 2 + 2)
+      /* 3b — Pass residual para escenas densas y evitar cruces persistentes */
+      const residualPasses = snap ? 4 : 2
+      for (let pass = 0; pass < residualPasses; pass++) {
+        let adjusted = false
+        vis.sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx))
+
+        for (let i = 0; i < vis.length; i++) {
+          const a = vis[i]
+          for (let j = i + 1; j < vis.length; j++) {
+            const b = vis[j]
+            const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(a.cx - b.cx)
+            const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs(a.cy - b.cy)
+            if (overlapX <= 0 || overlapY <= 0) continue
+
+            adjusted = true
+            const shiftY = overlapY + 1.6
+            b.cy += shiftY
+            const side = b.anchorSX >= a.anchorSX ? 1 : -1
+            b.cx += side * Math.min(12, overlapX * 0.45 + 1)
+
+            b.cx = Math.max(b.w / 2 + 2, Math.min(cw - b.w / 2 - 2, b.cx))
+            b.cy = Math.max(b.h + 2, Math.min(ch - 2, b.cy))
+          }
         }
+
+        if (!adjusted) break
       }
 
       /* 4 — Acotar dentro del viewport */
@@ -2678,28 +2684,105 @@ export default function ThreeViewer() {
         lbl.cy = Math.max(lbl.h + 2, Math.min(ch - 2, lbl.cy))
       }
 
+      /* 4b — Barrido ordenado por lado para distribuir etiquetas claramente */
+      const ordered = [...vis].sort((a, b) => (a.anchorSY - b.anchorSY) || (a.anchorSX - b.anchorSX))
+      for (let i = 0; i < ordered.length; i++) {
+        const lbl = ordered[i]
+        const sideDir = lbl.anchorSX <= (cw * 0.5) ? -1 : 1
+        const sideBase = sideDir < 0
+          ? Math.min(lbl.cx, cw * 0.46)
+          : Math.max(lbl.cx, cw * 0.54)
+
+        lbl.cx = Math.max(lbl.w / 2 + 2, Math.min(cw - lbl.w / 2 - 2, sideBase))
+        lbl.cy = Math.max(lbl.h + 2, Math.min(ch - 2, lbl.cy))
+
+        for (let attempt = 0; attempt < 12; attempt++) {
+          let collided = null
+          for (let j = 0; j < i; j++) {
+            const prev = ordered[j]
+            const overlapX = (lbl.w / 2 + prev.w / 2 + PAD) - Math.abs(lbl.cx - prev.cx)
+            const overlapY = (lbl.h / 2 + prev.h / 2 + PAD) - Math.abs(lbl.cy - prev.cy)
+            if (overlapX > 0 && overlapY > 0) {
+              collided = prev
+              break
+            }
+          }
+
+          if (!collided) break
+
+          lbl.cy = collided.cy + (collided.h / 2 + lbl.h / 2 + PAD + 1.5)
+          lbl.cx += sideDir * Math.min(22, 5 + attempt * 2.2)
+          lbl.cx = Math.max(lbl.w / 2 + 2, Math.min(cw - lbl.w / 2 - 2, lbl.cx))
+          lbl.cy = Math.max(lbl.h + 2, Math.min(ch - 2, lbl.cy))
+        }
+      }
+
+      /* 4c — Reverse pass para compactar sin reintroducir solapes */
+      for (let i = ordered.length - 1; i >= 0; i--) {
+        const a = ordered[i]
+        for (let j = i - 1; j >= 0; j--) {
+          const b = ordered[j]
+          const overlapX = (a.w / 2 + b.w / 2 + PAD) - Math.abs(a.cx - b.cx)
+          const overlapY = (a.h / 2 + b.h / 2 + PAD) - Math.abs(a.cy - b.cy)
+          if (overlapX <= 0 || overlapY <= 0) continue
+          b.cy = Math.max(b.h + 2, a.cy - (a.h / 2 + b.h / 2 + PAD + 1.5))
+        }
+      }
+
       /* 5 — Suavizar movimiento: lerp displayX/Y hacia cx/cy */
-      const LERP = 0.12
+      const LERP = snap ? 1 : LABEL_MOVE_LERP
+      const visibleLabels = []
       for (const lbl of labels) {
-        if (!lbl.onScreen || lbl._hidden) {
+        const hidden = !labelsEnabledRef.current || !lbl.onScreen || lbl._hidden
+        if (hidden) {
           lbl.el.style.display = 'none'
           lbl.lineEl.style.display = 'none'
           continue
         }
-        if (!lbl.initialized) {
+
+        if (!lbl.initialized || snap) {
           lbl.displayX = lbl.cx
           lbl.displayY = lbl.cy
           lbl.initialized = true
+        } else {
+          lbl.displayX += (lbl.cx - lbl.displayX) * LERP
+          lbl.displayY += (lbl.cy - lbl.displayY) * LERP
+          const dx = lbl.displayX - lbl.cx
+          const dy = lbl.displayY - lbl.cy
+          if (dx * dx + dy * dy < 0.25) {
+            lbl.displayX = lbl.cx
+            lbl.displayY = lbl.cy
+          }
         }
-        lbl.displayX += (lbl.cx - lbl.displayX) * LERP
-        lbl.displayY += (lbl.cy - lbl.displayY) * LERP
-        const dx = lbl.displayX - lbl.cx
-        const dy = lbl.displayY - lbl.cy
-        if (dx * dx + dy * dy < 0.25) {
-          lbl.displayX = lbl.cx
-          lbl.displayY = lbl.cy
+
+        visibleLabels.push(lbl)
+      }
+
+      /* 5b — Si el lerp deja overlap visible, forzar snap local inmediato. */
+      for (let pass = 0; pass < 2; pass++) {
+        let corrected = false
+        for (let i = 0; i < visibleLabels.length; i++) {
+          const a = visibleLabels[i]
+          for (let j = i + 1; j < visibleLabels.length; j++) {
+            const b = visibleLabels[j]
+            const overlapX = (a.w / 2 + b.w / 2 + 2) - Math.abs(a.displayX - b.displayX)
+            const overlapY = (a.h / 2 + b.h / 2 + 2) - Math.abs(a.displayY - b.displayY)
+            if (overlapX <= 0 || overlapY <= 0) continue
+
+            corrected = true
+            a.displayX = a.cx
+            a.displayY = a.cy
+            b.displayX = b.cx
+            b.displayY = b.cy
+          }
         }
+        if (!corrected) break
+      }
+
+      for (const lbl of visibleLabels) {
         lbl.el.style.display  = ''
+        lbl.el.style.visibility = 'visible'
+        lbl.el.style.opacity = '1'
         lbl.el.style.transform = `translate(${lbl.displayX}px,${lbl.displayY}px) translate(-50%,-100%)`
         const ldx = lbl.displayX - lbl.anchorSX
         const ldy = lbl.displayY - lbl.anchorSY
@@ -2714,6 +2797,8 @@ export default function ThreeViewer() {
         }
       }
     }
+
+    updateLabelsLayoutRef.current = updateLabelsOverlay
 
     /* ── Nav dot animation (polyline-based) ── */
     const _fwd = new THREE.Vector3()
@@ -2889,6 +2974,7 @@ export default function ThreeViewer() {
       ktx2LoaderRef.current?.dispose()
       ktx2LoaderRef.current = null
       invalidateRenderRef.current = () => {}
+      updateLabelsLayoutRef.current = () => {}
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2923,6 +3009,7 @@ export default function ThreeViewer() {
 
     /* Limpiar labels del overlay antes de destruir los meshes */
     cleanupLabels()
+    setLabelsVisible(false)
 
     scene.children.slice().forEach(child => {
       if (child.isLight) return
@@ -2932,10 +3019,16 @@ export default function ThreeViewer() {
     meshes.current      = []
     pickablesRef.current = []
     focusPickablesRef.current = []
+    isolatedPickablesRef.current = []
     pickableToEntryRef.current.clear()
+    labelsByKeyRef.current.clear()
+    entryToLabelGroupRef.current.clear()
+    labelGroupsRef.current.clear()
+    expandedLabelGroupRef.current = null
     animMap.current.clear()
     hoverRef.current    = null
     selectedRef.current = null
+    isolatedEntryRef.current = null
     camAnim.current.active = false
     navGraphRef.current = null
     navLoadStateRef.current.modelIndex = activeModel
@@ -2945,9 +3038,6 @@ export default function ThreeViewer() {
     modelCenterRef.current.set(0, 0, 0)
     clearRouteVisuals()
     clearNavMarkers()
-    clearNavDebugPoints()
-    clearNavDebug()
-    setNavDebugInfo(null)
 
     // OPT: low-poly placeholder while the heavy GLB is parsed.
     const loadingProxy = createLoadingPlaceholderModel()
@@ -3023,6 +3113,9 @@ export default function ThreeViewer() {
           const dominantFocusMesh = getLargestMeshByVolume(focusCandidates)
             ?? getLargestMeshByVolume(objectMeshes)
           const focusMeshes = dominantFocusMesh ? [dominantFocusMesh] : focusCandidates
+          const fullBounds = getBoundsForMeshList(objectMeshes)
+          const fullSize = fullBounds.getSize(new THREE.Vector3())
+          const dominantSize = Math.max(fullSize.x, fullSize.y, fullSize.z, 0.001)
 
           n++
           const rawName = root.name?.trim() || `Zona ${n}`
@@ -3057,6 +3150,7 @@ export default function ThreeViewer() {
             origWorldPos: origWorldPos.clone(),
             origScale:    root.scale.clone(),
             origColor:    getObjectColor(dominantFocusMesh ?? root).clone(),
+            dominantSize,
             rawName,
             name:         displayName,
             _label:       null,
@@ -3073,6 +3167,11 @@ export default function ThreeViewer() {
           })
         })
 
+        const { entryToGroup, groups } = buildConsecutiveJGroups(meshes.current)
+        entryToLabelGroupRef.current = entryToGroup
+        labelGroupsRef.current = groups
+        expandedLabelGroupRef.current = null
+
         /* ── Labels siempre visibles + tinte por estado ── */
         const nb = new THREE.Box3().setFromObject(model)
         const modelSize = nb.getSize(new THREE.Vector3())
@@ -3083,6 +3182,7 @@ export default function ThreeViewer() {
         const overlay = R.current.labelsOverlay
         const svgEl   = R.current.labelsSvg
         labelsDataRef.current = []
+        labelsByKeyRef.current.clear()
 
         meshes.current.forEach(entry => {
           const bb = getEntryBounds(entry, 'full')
@@ -3105,6 +3205,8 @@ export default function ThreeViewer() {
           /* Crear div del label */
           const div = document.createElement('div')
           div.className = 'room-label'
+          div.style.visibility = 'hidden'
+          div.style.opacity = '0'
 
           const dot = document.createElement('span')
           dot.className = 'label-dot'
@@ -3131,20 +3233,24 @@ export default function ThreeViewer() {
           const data = {
             mesh: entry.mesh, anchorLocal,
             el: div, lineEl: line, name: entry.name, key: entry.key,
+            textEl: text,
+            entryLabelName: entry.name,
+            groupKey: entryToLabelGroupRef.current.get(entry.key) ?? null,
             w: 0, h: 0, cx: 0, cy: 0,
             displayX: 0, displayY: 0, initialized: false,
             anchorSX: 0, anchorSY: 0,
             onScreen: false, behind: false,
           }
           labelsDataRef.current.push(data)
+          labelsByKeyRef.current.set(entry.key, data)
           entry._label = data
         })
 
+        collapseAllLabelGroups()
+
         /* Medir tamaños reales tras append + init display pos */
         labelsDataRef.current.forEach(lbl => {
-          const r = lbl.el.getBoundingClientRect()
-          lbl.w = r.width  || 80
-          lbl.h = r.height || 22
+          measureLabelSize(lbl)
           lbl.displayX = lbl.cx
           lbl.displayY = lbl.cy
         })
@@ -3156,6 +3262,9 @@ export default function ThreeViewer() {
         camera.position.copy(pos)
         controls.target.copy(target)
         controls.update()
+
+        // OPT: pre-layout labels so they appear directly in-place after load.
+        updateLabelsLayoutRef.current({ snap: true })
 
         setLoading(false)
         loadingLiveRef.current = false
@@ -3202,6 +3311,22 @@ export default function ThreeViewer() {
     invalidateRenderRef.current()
   }, [loading])
 
+  useEffect(() => {
+    labelsEnabledRef.current = labelsEnabled
+
+    if (selectedRef.current) {
+      showLabelsForSelection(selectedRef.current)
+    } else {
+      setLabelsVisible(true)
+    }
+
+    if (labelsEnabled) {
+      updateLabelsLayoutRef.current({ snap: true })
+    }
+
+    invalidateRenderRef.current()
+  }, [labelsEnabled])
+
   /* Route is now built directly in onClick handler, no effect needed */
 
   useEffect(() => {
@@ -3225,12 +3350,8 @@ export default function ThreeViewer() {
 
   useEffect(() => {
     navModeLiveRef.current = navMode
-    showNavDebugLiveRef.current = showNavDebug
-    const visible = navMode && showNavDebug
-    if (navDebugRef.current) navDebugRef.current.visible = visible
-    if (navDebugPointsRef.current) navDebugPointsRef.current.visible = visible
     invalidateRenderRef.current()
-  }, [navMode, showNavDebug])
+  }, [navMode])
 
   useEffect(() => {
     if (meshes.current.length === 0) return
@@ -3361,6 +3482,21 @@ export default function ThreeViewer() {
           <span className="btn-short">Nav</span>
         </button>
 
+        <button
+          onClick={() => setLabelsEnabled(v => !v)}
+          title={labelsEnabled ? 'Ocultar etiquetas' : 'Mostrar etiquetas'}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-150 shrink-0"
+          style={{
+            background:'var(--color-bg)',
+            color:'var(--color-text-muted)',
+            border:'1px solid var(--color-border)',
+          }}
+        >
+          {labelsEnabled ? <EyeOff size={12} /> : <Eye size={12} />}
+          <span className="btn-label">{labelsEnabled ? 'Ocultar etiquetas' : 'Mostrar etiquetas'}</span>
+          <span className="btn-short">Labels</span>
+        </button>
+
         <div className="ml-auto shrink-0">
           {!selectedName && (
             <div className="flex items-center gap-1.5 text-[12px]"
@@ -3478,87 +3614,12 @@ export default function ThreeViewer() {
                 </div>
               )}
 
-              <div className="nav-debug-section">
-                <button
-                  className={`nav-debug-toggle${showNavDebug ? ' is-on' : ''}`}
-                  onClick={() => setShowNavDebug(v => !v)}
-                >
-                  {showNavDebug ? 'Ocultar navmesh y puntos' : 'Mostrar navmesh y puntos usados'}
-                </button>
-
-                {showNavDebug && (
-                  <div className="nav-debug-card">
-                    <div className="nav-debug-row">
-                      <span>Origen escena</span>
-                      <strong>{formatDebugVec(navDebugInfo?.originScene)}</strong>
-                    </div>
-                    <div className="nav-debug-row">
-                      <span>Destino clic escena</span>
-                      <strong>{formatDebugVec(navDebugInfo?.destSceneInput)}</strong>
-                    </div>
-                    <div className="nav-debug-row">
-                      <span>Destino ajustado escena</span>
-                      <strong>{formatDebugVec(navDebugInfo?.snappedDestScene)}</strong>
-                    </div>
-                    <div className="nav-debug-row">
-                      <span>Origen nav</span>
-                      <strong>{formatDebugVec(navDebugInfo?.originNav)}</strong>
-                    </div>
-                    <div className="nav-debug-row">
-                      <span>Destino clic nav</span>
-                      <strong>{formatDebugVec(navDebugInfo?.destNavInput)}</strong>
-                    </div>
-                    <div className="nav-debug-row">
-                      <span>Destino ajustado nav</span>
-                      <strong>{formatDebugVec(navDebugInfo?.snappedDestNav)}</strong>
-                    </div>
-
-                    <div className="nav-debug-list">
-                      <span className="nav-debug-list-title">
-                        Path nav base ({navDebugInfo?.navWaypointsCount ?? 0})
-                      </span>
-                      <span className="nav-debug-list-meta">
-                        L {Number(navDebugInfo?.navLength ?? 0).toFixed(2)} | T {navDebugInfo?.navTurns ?? 0} | C {Number(navDebugInfo?.navCurvature ?? 0).toFixed(2)}
-                      </span>
-                      {(navDebugInfo?.navWaypointsSample?.length ?? 0) > 0 ? (
-                        navDebugInfo.navWaypointsSample.map((p, idx) => (
-                          <span key={`nav-${idx}`} className="nav-debug-list-item">
-                            {idx + 1}. {formatDebugVec(p)}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="nav-debug-list-empty">Sin puntos</span>
-                      )}
-                    </div>
-
-                    <div className="nav-debug-list">
-                      <span className="nav-debug-list-title">
-                        Ruta final render ({navDebugInfo?.routePointsCount ?? 0})
-                      </span>
-                      <span className="nav-debug-list-meta">
-                        L {Number(navDebugInfo?.routeLength ?? 0).toFixed(2)} | T {navDebugInfo?.routeTurns ?? 0} | C {Number(navDebugInfo?.routeCurvature ?? 0).toFixed(2)}
-                      </span>
-                      {(navDebugInfo?.routePointsSample?.length ?? 0) > 0 ? (
-                        navDebugInfo.routePointsSample.map((p, idx) => (
-                          <span key={`route-${idx}`} className="nav-debug-list-item">
-                            {idx + 1}. {formatDebugVec(p)}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="nav-debug-list-empty">Sin puntos</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
               {/* Change destination button */}
               {navDest && (
                 <button
                   className="nav-change-dest-btn"
                   onClick={() => {
                     clearRouteVisuals()
-                    clearNavDebugPoints()
                     /* Remove dest markers, keep origin marker */
                     while (navMarkersRef.current.length > 1) {
                       const old = navMarkersRef.current.pop()
@@ -3569,28 +3630,6 @@ export default function ThreeViewer() {
                     setNavDest(null)
                     setNavActive(false)
                     setLabelsVisible(true)
-                    const originNow = navOriginPt.current
-                    setNavDebugInfo({
-                      originScene: toDebugVec(originNow),
-                      destSceneInput: null,
-                      snappedDestScene: null,
-                      originNav: toDebugVec(originNow ? sceneToNavPoint(originNow) : null),
-                      destNavInput: null,
-                      snappedDestNav: null,
-                      navWaypointsCount: 0,
-                      routePointsCount: 0,
-                      navWaypointsSample: [],
-                      routePointsSample: [],
-                    })
-                    if (originNow) {
-                      rebuildNavDebugPoints({
-                        originScene: originNow.clone(),
-                        destSceneInput: null,
-                        snappedDestScene: null,
-                        navRawWaypoints: [],
-                        routeScenePoints: [],
-                      })
-                    }
                   }}
                 >
                   <MapPin size={14} />
