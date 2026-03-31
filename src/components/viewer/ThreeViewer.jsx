@@ -2,6 +2,8 @@
 import * as THREE from 'three'
 import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader }   from 'three/examples/jsm/loaders/DRACOLoader.js'
+import { KTX2Loader }    from 'three/examples/jsm/loaders/KTX2Loader.js'
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
@@ -12,7 +14,7 @@ import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent
 
 const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [14.94, -4.60, 33.47] },
-  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_P1_FINAL.glb', label: 'Planta 1',    short: 'P1', entryName: 'Sólido27-1', origin: [12.63, -1.60, 31.42] },
+  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_PA.glb', label: 'Planta Alta',    short: 'PA', entryName: 'Sólido27-1', origin: [12.63, -1.60, 31.42] },
 ]
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
@@ -42,10 +44,11 @@ const ORTHO_AXIS_SNAP_ABS = 0.55
 const ORTHO_AXIS_SNAP_RATIO = 0.14
 const ORTHO_ZIGZAG_SHORT_SEG = 1.8
 const ORTHO_ZIGZAG_RETURN_TOL = 0.22
-const RENDER_PIXEL_RATIO_MAX = 1.25
+const RENDER_PIXEL_RATIO_MAX = 2
 const ENABLE_SHADOWS = false
 const LABEL_UPDATE_FPS = 24
-const POINTER_MOVE_INTERVAL_MS = 32
+const POINTER_MOVE_INTERVAL_MS = 50
+const DEV_STATS_LOG_INTERVAL_MS = 4000
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -58,6 +61,138 @@ const STATUS_WEIGHTED = [
 ]
 const MIN_LABEL_FRAC = 0.04
 const DRACO_DECODER_PATH = '/draco/'
+const KTX2_TRANSCODER_PATH = 'https://unpkg.com/three@0.183.1/examples/jsm/libs/basis/'
+const MATERIAL_TEXTURE_KEYS = [
+  'map', 'alphaMap', 'aoMap', 'bumpMap', 'displacementMap', 'emissiveMap', 'envMap',
+  'lightMap', 'metalnessMap', 'normalMap', 'roughnessMap', 'specularMap',
+  'clearcoatMap', 'clearcoatNormalMap', 'clearcoatRoughnessMap',
+  'sheenColorMap', 'sheenRoughnessMap', 'transmissionMap', 'thicknessMap',
+  'iridescenceMap', 'iridescenceThicknessMap', 'anisotropyMap',
+]
+
+function formatProgressMB(bytes = 0) {
+  const mb = bytes / (1024 * 1024)
+  return `${mb.toFixed(mb >= 10 ? 1 : 2)} MB`
+}
+
+function disposeMaterialTextures(material, seenTextures = null) {
+  if (!material) return
+  MATERIAL_TEXTURE_KEYS.forEach(key => {
+    const tex = material[key]
+    if (!tex?.isTexture) return
+    if (seenTextures && seenTextures.has(tex)) return
+    seenTextures?.add(tex)
+    tex.dispose()
+  })
+}
+
+function optimizeTextureForRealtime(texture, renderer, optimizedTextures) {
+  if (!texture?.isTexture || optimizedTextures.has(texture)) return
+  optimizedTextures.add(texture)
+
+  const maxAnisotropy = Math.max(
+    1,
+    Math.min(4, renderer?.capabilities?.getMaxAnisotropy?.() ?? 1),
+  )
+  texture.anisotropy = maxAnisotropy
+
+  const width = texture.image?.width ?? 0
+  const height = texture.image?.height ?? 0
+  const canMipMap = THREE.MathUtils.isPowerOfTwo(width) && THREE.MathUtils.isPowerOfTwo(height)
+  texture.generateMipmaps = canMipMap
+  texture.minFilter = canMipMap ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+}
+
+function optimizeMeshForRealtime(mesh, renderer, optimizedTextures) {
+  if (!mesh?.isMesh) return
+
+  // OPT: enforce culling and cached bounds for cheaper per-frame visibility tests.
+  mesh.frustumCulled = true
+  if (mesh.geometry) {
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+    if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere()
+    mesh.geometry.attributes?.position?.setUsage?.(THREE.StaticDrawUsage)
+  }
+
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+  materials.forEach(material => {
+    if (!material) return
+    MATERIAL_TEXTURE_KEYS.forEach(key => {
+      optimizeTextureForRealtime(material[key], renderer, optimizedTextures)
+    })
+  })
+}
+
+function buildMaterialCacheKey(material) {
+  if (!material) return null
+  return [
+    material.type,
+    material.map?.uuid ?? '-',
+    material.normalMap?.uuid ?? '-',
+    material.roughnessMap?.uuid ?? '-',
+    material.metalnessMap?.uuid ?? '-',
+    material.emissiveMap?.uuid ?? '-',
+    material.transparent ? 1 : 0,
+    material.opacity ?? 1,
+    material.side ?? 0,
+    material.vertexColors ? 1 : 0,
+    material.flatShading ? 1 : 0,
+    material.color?.getHexString?.() ?? '-',
+    material.roughness ?? '-',
+    material.metalness ?? '-',
+  ].join('|')
+}
+
+function getCachedMaterial(material, materialCache) {
+  if (!material || !materialCache) return material
+  const key = buildMaterialCacheKey(material)
+  if (!key) return material
+  const cached = materialCache.get(key)
+  if (cached) return cached
+  materialCache.set(key, material)
+  return material
+}
+
+function applyMaterialCache(material, materialCache) {
+  if (Array.isArray(material)) {
+    return material.map(mat => getCachedMaterial(mat, materialCache))
+  }
+  return getCachedMaterial(material, materialCache)
+}
+
+function createLoadingPlaceholderModel() {
+  const group = new THREE.Group()
+
+  const floor = new THREE.Mesh(
+    new THREE.CylinderGeometry(24, 24, 0.24, 40),
+    new THREE.MeshBasicMaterial({ color: 0xbebebe, transparent: true, opacity: 0.22 }),
+  )
+  floor.position.y = -0.6
+
+  const wireShell = new THREE.Mesh(
+    new THREE.BoxGeometry(30, 8.5, 30),
+    new THREE.MeshBasicMaterial({
+      color: 0x9a9a9a,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.34,
+    }),
+  )
+  wireShell.position.y = 3.8
+
+  const core = new THREE.Mesh(
+    new THREE.BoxGeometry(9, 10, 9),
+    new THREE.MeshBasicMaterial({ color: 0xd6d6d6, transparent: true, opacity: 0.42 }),
+  )
+  core.position.y = 4.7
+
+  group.add(floor)
+  group.add(wireShell)
+  group.add(core)
+  return group
+}
 
 function meshStatus(name) {
   const h = [...name].reduce((a, c) => a + c.charCodeAt(0), 0)
@@ -444,11 +579,18 @@ function resolveInteractiveRoots(model) {
 }
 
 function disposeObj(obj) {
+  const seenMaterials = new Set()
+  const seenTextures = new Set()
+
   obj.traverse(n => {
     n.geometry?.dispose()
-    ;(Array.isArray(n.material) ? n.material : [n.material]).forEach(m => {
-      m?.map?.dispose()
-      m?.dispose()
+
+    const materials = Array.isArray(n.material) ? n.material : [n.material]
+    materials.forEach(material => {
+      if (!material || seenMaterials.has(material)) return
+      seenMaterials.add(material)
+      disposeMaterialTextures(material, seenTextures)
+      material.dispose()
     })
   })
 }
@@ -769,6 +911,10 @@ function fitEntryCameraUsingAnchor(entry, camera, anchorWorld, padMult = 1.02) {
 export default function ThreeViewer() {
   const mountRef = useRef(null)
   const dracoLoaderRef = useRef(null)
+  const ktx2LoaderRef = useRef(null)
+  const invalidateRenderRef = useRef(() => {})
+  const loadingProxyRef = useRef(null)
+  const loadingLiveRef = useRef(true)
 
   const R = useRef({
     renderer: null, scene: null, camera: null,
@@ -829,6 +975,45 @@ export default function ThreeViewer() {
   const [navDebugInfo, setNavDebugInfo]  = useState(null)
   const navModeLiveRef = useRef(false)
   const showNavDebugLiveRef = useRef(false)
+  const navLoadStateRef = useRef({ modelIndex: -1, loading: false, promise: null })
+
+  const [loadProgress, setLoadProgress] = useState({
+    phase: 'Inicializando',
+    loaded: 0,
+    total: 0,
+    percent: 0,
+  })
+
+  function updateLoadProgress(partial) {
+    setLoadProgress(prev => {
+      const resetting = partial.reset === true
+      const next = {
+        phase: partial.phase ?? prev.phase,
+        loaded: partial.loaded ?? prev.loaded,
+        total: partial.total ?? prev.total,
+      }
+
+      const rawPercent = next.total > 0
+        ? (next.loaded / next.total) * 100
+        : (next.loaded > 0 ? Math.min(95, prev.percent + 2.5) : (resetting ? 0 : prev.percent))
+      const percent = resetting
+        ? Math.min(100, rawPercent)
+        : Math.max(prev.percent, Math.min(100, rawPercent))
+
+      const changed =
+        next.phase !== prev.phase
+        || Math.abs(next.loaded - prev.loaded) >= (256 * 1024)
+        || Math.abs(next.total - prev.total) >= (256 * 1024)
+        || Math.abs(percent - prev.percent) >= 0.5
+
+      if (!changed) return prev
+
+      return {
+        ...next,
+        percent,
+      }
+    })
+  }
 
   /* ── Limpia todas las etiquetas del overlay ── */
   function cleanupLabels() {
@@ -892,6 +1077,8 @@ export default function ThreeViewer() {
       duration,
       easing,
     })
+    // OPT: animate only while needed by invalidating the render loop on demand.
+    invalidateRenderRef.current()
   }
 
   function startCamAnim(toPos, toTarget) {
@@ -919,6 +1106,8 @@ export default function ThreeViewer() {
       qEnd: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir),
       fromUp, toUp,
     }
+    // OPT: schedule render work only while camera interpolation is active.
+    invalidateRenderRef.current()
   }
 
   function toParentLocalDelta(entry, worldPoint, worldDelta) {
@@ -1006,6 +1195,7 @@ export default function ThreeViewer() {
       navDotRef.current = null
     }
     navAnimRef.current = { active: false, t: 0, pathLen: 0, polylinePoints: [] }
+    invalidateRenderRef.current()
   }
 
   function clearNavMarkers() {
@@ -1015,6 +1205,7 @@ export default function ThreeViewer() {
       scene?.remove(m)
     })
     navMarkersRef.current = []
+    invalidateRenderRef.current()
   }
 
   function addNavMarker(point, color, type) {
@@ -1124,6 +1315,7 @@ export default function ThreeViewer() {
 
     scene.add(group)
     navMarkersRef.current.push(group)
+    invalidateRenderRef.current()
     return group
   }
 
@@ -1140,6 +1332,7 @@ export default function ThreeViewer() {
         }
       })
       navDebugRef.current = null
+      invalidateRenderRef.current()
     }
   }
 
@@ -1156,6 +1349,7 @@ export default function ThreeViewer() {
       }
     })
     navDebugPointsRef.current = null
+    invalidateRenderRef.current()
   }
 
   function rebuildNavDebugPoints(data) {
@@ -1224,6 +1418,147 @@ export default function ThreeViewer() {
     group.visible = showNavDebugLiveRef.current && navModeLiveRef.current
     scene.add(group)
     navDebugPointsRef.current = group
+    invalidateRenderRef.current()
+  }
+
+  function buildNavDebugOverlay(navGeo, navMatrix) {
+    const scene = R.current.scene
+    if (!scene || !navGeo) return
+
+    clearNavDebug()
+
+    const debugGroup = new THREE.Group()
+
+    const navFillGeo = navGeo.clone()
+    navFillGeo.applyMatrix4(navMatrix)
+    const navFillMesh = new THREE.Mesh(
+      navFillGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x14b8a6,
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    )
+    navFillMesh.renderOrder = 860
+
+    const navWireGeo = navFillGeo.clone()
+    const navWireMesh = new THREE.Mesh(
+      navWireGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x67e8f9,
+        transparent: true,
+        opacity: 0.58,
+        wireframe: true,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    )
+    navWireMesh.renderOrder = 861
+
+    debugGroup.add(navFillMesh)
+    debugGroup.add(navWireMesh)
+    debugGroup.visible = showNavDebugLiveRef.current && navModeLiveRef.current
+    scene.add(debugGroup)
+    navDebugRef.current = debugGroup
+  }
+
+  function ensureNavGraphLoaded() {
+    const scene = R.current.scene
+    if (!scene) return Promise.resolve(null)
+
+    const navFile = MODELS[activeModel]?.nav
+    if (!navFile) return Promise.resolve(null)
+
+    const state = navLoadStateRef.current
+    if (navGraphRef.current && state.modelIndex === activeModel) {
+      return Promise.resolve(navGraphRef.current)
+    }
+    if (state.loading && state.modelIndex === activeModel && state.promise) {
+      return state.promise
+    }
+
+    const navLoader = new GLTFLoader()
+    if (dracoLoaderRef.current) navLoader.setDRACOLoader(dracoLoaderRef.current)
+    if (ktx2LoaderRef.current) navLoader.setKTX2Loader(ktx2LoaderRef.current)
+    navLoader.setMeshoptDecoder(MeshoptDecoder)
+
+    // OPT: defer navmesh download until navigation mode is actually used.
+    updateLoadProgress({ phase: 'Cargando navmesh', loaded: 0, total: 0 })
+
+    state.modelIndex = activeModel
+    state.loading = true
+
+    const promise = new Promise(resolve => {
+      navLoader.load(
+        navFile,
+        navGltf => {
+          const latest = navLoadStateRef.current
+          if (latest.modelIndex !== activeModel) {
+            resolve(null)
+            return
+          }
+
+          const navScene = navGltf.scene
+          const navBox = new THREE.Box3().setFromObject(navScene)
+          const navCen = navBox.getCenter(new THREE.Vector3())
+          navScene.position.sub(navCen)
+          navOffsetRef.current.copy(modelCenterRef.current).sub(navCen)
+          navScene.updateMatrixWorld(true)
+
+          let navGeo = null
+          let navMatrix = new THREE.Matrix4()
+          navScene.traverse(n => {
+            if (n.isMesh && !navGeo) {
+              navGeo = n.geometry
+              navMatrix = n.matrixWorld.clone()
+            }
+          })
+
+          if (navGeo) {
+            navGraphRef.current = buildNavGraph(navGeo, navMatrix)
+            buildNavDebugOverlay(navGeo, navMatrix)
+          }
+
+          updateLoadProgress({
+            phase: 'Navmesh lista',
+            loaded: 1,
+            total: 1,
+          })
+          invalidateRenderRef.current()
+          resolve(navGraphRef.current)
+        },
+        xhr => {
+          const latest = navLoadStateRef.current
+          if (latest.modelIndex !== activeModel) return
+          updateLoadProgress({
+            phase: 'Cargando navmesh',
+            loaded: xhr?.loaded ?? 0,
+            total: xhr?.total ?? 0,
+          })
+        },
+        err => {
+          const latest = navLoadStateRef.current
+          if (latest.modelIndex !== activeModel) {
+            resolve(null)
+            return
+          }
+          console.error('Nav GLB error', err)
+          resolve(null)
+        },
+      )
+    }).finally(() => {
+      const latest = navLoadStateRef.current
+      if (latest.modelIndex === activeModel) {
+        latest.loading = false
+        latest.promise = null
+      }
+    })
+
+    state.promise = promise
+    return promise
   }
 
   function exitNavigation() {
@@ -1643,11 +1978,12 @@ export default function ThreeViewer() {
     return simplifyOrthogonalPolyline(out, 0.35, graph)
   }
 
-  function buildRoute() {
-    const graph = navGraphRef.current
+  async function buildRoute() {
+    const graph = navGraphRef.current ?? await ensureNavGraphLoaded()
     const fromScene = navOriginPt.current
     const toScene   = navDestPt.current
     if (!graph || !fromScene || !toScene) return
+    if (!navModeLiveRef.current) return
 
     clearRouteVisuals()
     if (selectedRef.current) deselectEntry(selectedRef.current)
@@ -1915,6 +2251,7 @@ export default function ThreeViewer() {
       startCamAnim(routeFrame.pos, routeFrame.target)
     }
     setNavActive(true)
+    invalidateRenderRef.current()
   }
 
   function enterNavMode() {
@@ -1950,6 +2287,12 @@ export default function ThreeViewer() {
       routeScenePoints: [],
     })
     setNavMode(true)
+
+    // OPT: navmesh is loaded lazily only when navigation is requested.
+    ensureNavGraphLoaded().then(() => {
+      if (!navModeLiveRef.current) return
+      invalidateRenderRef.current()
+    })
   }
 
   handlersRef.current.onLabelClick = function(entryKey) {
@@ -2142,6 +2485,16 @@ export default function ThreeViewer() {
     mount.appendChild(renderer.domElement)
     r.renderer = renderer
 
+    if (!ktx2LoaderRef.current) {
+      const ktx2 = new KTX2Loader()
+      // OPT: prepare Basis/KTX2 transcoding path for compressed textures.
+      ktx2.setTranscoderPath(KTX2_TRANSCODER_PATH)
+      ktx2.detectSupport(renderer)
+      ktx2LoaderRef.current = ktx2
+    } else {
+      ktx2LoaderRef.current.detectSupport(renderer)
+    }
+
     const timer = new Timer()
     r.timer = timer
 
@@ -2197,6 +2550,7 @@ export default function ThreeViewer() {
       renderer.setSize(w, h)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
+      invalidateRenderRef.current()
     })
     ro.observe(mount)
 
@@ -2407,25 +2761,109 @@ export default function ThreeViewer() {
       }
     }
 
-    let labelAcc = 0
+    const runtime = {
+      running: false,
+      raf: 0,
+      labelAcc: 0,
+      needsRender: true,
+      interacting: false,
+      lastStatsLog: 0,
+    }
 
-    function loop() {
-      r.raf = requestAnimationFrame(loop)
+    function scheduleRender() {
+      runtime.needsRender = true
+      if (runtime.running) return
+      runtime.running = true
+      timer.reset()
+      runtime.raf = requestAnimationFrame(loop)
+      r.raf = runtime.raf
+    }
+
+    function loop(now = performance.now()) {
+      if (!runtime.running) return
+
       timer.update()
       const dt = timer.getDelta()
+
+      const hadMeshAnims = animMap.current.size > 0
+      const hadCamAnim = camAnim.current.active
+      const hadNavAnim = navAnimRef.current.active
+
       tickMeshAnims(dt)
       tickCamAnim(dt)
       tickNavAnim(dt)
-      if (!camAnim.current.active) controls.update()
-      else controls.target.copy(controls.target) // keep internal state in sync
-      renderer.render(scene, camera)
-      labelAcc += dt
-      if (labelAcc >= (1 / LABEL_UPDATE_FPS)) {
-        updateLabelsOverlay()
-        labelAcc = 0
+
+      let controlsChanged = false
+      if (!camAnim.current.active) {
+        controlsChanged = controls.update()
+      }
+
+      const animating =
+        hadMeshAnims
+        || hadCamAnim
+        || hadNavAnim
+        || animMap.current.size > 0
+        || camAnim.current.active
+        || navAnimRef.current.active
+
+      const shouldRender = runtime.needsRender || controlsChanged || animating || loadingLiveRef.current
+
+      if (shouldRender) {
+        renderer.render(scene, camera)
+        runtime.labelAcc += dt
+        if (runtime.labelAcc >= (1 / LABEL_UPDATE_FPS)) {
+          updateLabelsOverlay()
+          runtime.labelAcc = 0
+        }
+        runtime.needsRender = false
+
+        // OPT: lightweight runtime stats from renderer.info during development.
+        if (import.meta.env.DEV && (now - runtime.lastStatsLog) >= DEV_STATS_LOG_INTERVAL_MS) {
+          runtime.lastStatsLog = now
+          const info = renderer.info
+          console.debug(
+            '[THREE][perf]',
+            `calls=${info.render.calls}`,
+            `triangles=${info.render.triangles}`,
+            `points=${info.render.points}`,
+          )
+        }
+      }
+
+      const keepRunning =
+        runtime.interacting
+        || controlsChanged
+        || animating
+        || loadingLiveRef.current
+        || runtime.needsRender
+
+      if (keepRunning) {
+        runtime.raf = requestAnimationFrame(loop)
+        r.raf = runtime.raf
+      } else {
+        runtime.running = false
+        runtime.raf = 0
+        r.raf = 0
       }
     }
-    loop()
+
+    invalidateRenderRef.current = scheduleRender
+    scheduleRender()
+
+    const onControlStart = () => {
+      runtime.interacting = true
+      scheduleRender()
+    }
+    const onControlEnd = () => {
+      runtime.interacting = false
+      scheduleRender()
+    }
+    const onControlChange = () => {
+      scheduleRender()
+    }
+    controls.addEventListener('start', onControlStart)
+    controls.addEventListener('end', onControlEnd)
+    controls.addEventListener('change', onControlChange)
 
     const pmWrapper = (e) => handlersRef.current.onPointerMove?.(e)
     const clWrapper = (e) => handlersRef.current.onClick?.(e)
@@ -2434,22 +2872,29 @@ export default function ThreeViewer() {
 
     return () => {
       ro.disconnect()
-      cancelAnimationFrame(r.raf)
+      cancelAnimationFrame(runtime.raf || r.raf)
       clearTimeout(idleTimerRef.current)
       cleanupLabels()
+      controls.removeEventListener('start', onControlStart)
+      controls.removeEventListener('end', onControlEnd)
+      controls.removeEventListener('change', onControlChange)
       renderer.domElement.removeEventListener('pointermove', pmWrapper)
       renderer.domElement.removeEventListener('click', clWrapper)
+      controls.dispose()
       renderer.dispose()
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
       if (mount.contains(labelsOverlay)) mount.removeChild(labelsOverlay)
       dracoLoaderRef.current?.dispose()
       dracoLoaderRef.current = null
+      ktx2LoaderRef.current?.dispose()
+      ktx2LoaderRef.current = null
+      invalidateRenderRef.current = () => {}
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const { scene, camera, controls } = R.current
-    if (!scene) return
+    const { scene, camera, controls, renderer } = R.current
+    if (!scene || !renderer) return
 
     /*
      * Bandera stale: en StrictMode (dev) React invoca los efectos dos veces.
@@ -2462,6 +2907,13 @@ export default function ThreeViewer() {
     let stale = false
 
     setLoading(true)
+    loadingLiveRef.current = true
+    updateLoadProgress({
+      phase: 'Preparando carga',
+      loaded: 0,
+      total: 0,
+      reset: true,
+    })
     setTransitioning(true)
     setSelectedName(null)
     setSelectedStatus(null)
@@ -2486,6 +2938,9 @@ export default function ThreeViewer() {
     selectedRef.current = null
     camAnim.current.active = false
     navGraphRef.current = null
+    navLoadStateRef.current.modelIndex = activeModel
+    navLoadStateRef.current.loading = false
+    navLoadStateRef.current.promise = null
     navOffsetRef.current.set(0, 0, 0)
     modelCenterRef.current.set(0, 0, 0)
     clearRouteVisuals()
@@ -2494,14 +2949,44 @@ export default function ThreeViewer() {
     clearNavDebug()
     setNavDebugInfo(null)
 
-    const modelLoader = new GLTFLoader()
+    // OPT: low-poly placeholder while the heavy GLB is parsed.
+    const loadingProxy = createLoadingPlaceholderModel()
+    scene.add(loadingProxy)
+    loadingProxyRef.current = loadingProxy
+    invalidateRenderRef.current()
+
+    const loadingManager = new THREE.LoadingManager()
+    loadingManager.onStart = () => {
+      updateLoadProgress({
+        phase: 'Descargando modelo',
+        loaded: 0,
+        total: 0,
+      })
+    }
+    loadingManager.onLoad = () => {
+      updateLoadProgress({
+        phase: 'Procesando modelo',
+        loaded: 1,
+        total: 1,
+      })
+    }
+
+    const modelLoader = new GLTFLoader(loadingManager)
     if (dracoLoaderRef.current) modelLoader.setDRACOLoader(dracoLoaderRef.current)
+    if (ktx2LoaderRef.current) modelLoader.setKTX2Loader(ktx2LoaderRef.current)
+    modelLoader.setMeshoptDecoder(MeshoptDecoder)
 
     modelLoader.load(
       MODELS[activeModel].file,
       gltf => {
         /* Si este efecto fue desmontado (StrictMode) no tocar nada */
         if (stale) return
+
+        if (loadingProxyRef.current) {
+          scene.remove(loadingProxyRef.current)
+          disposeObj(loadingProxyRef.current)
+          loadingProxyRef.current = null
+        }
 
         const model = gltf.scene
         const box = new THREE.Box3().setFromObject(model)
@@ -2511,11 +2996,19 @@ export default function ThreeViewer() {
         scene.add(model)
         scene.updateMatrixWorld(true)
 
+        const optimizedTextures = new Set()
+        model.traverse(node => {
+          // OPT: precompute bounds + texture filters once to reduce per-frame cost.
+          optimizeMeshForRealtime(node, renderer, optimizedTextures)
+        })
+
         /* Limpiar meshes por seguridad (doble protección) */
         meshes.current = []
         pickablesRef.current = []
         focusPickablesRef.current = []
         pickableToEntryRef.current.clear()
+
+        const materialCache = new Map()
 
         const interactiveRoots = resolveInteractiveRoots(model)
         let n = 0
@@ -2541,7 +3034,11 @@ export default function ThreeViewer() {
           objectMeshes.forEach(m => {
             m.castShadow = ENABLE_SHADOWS
             m.receiveShadow = ENABLE_SHADOWS
-            if (!colorMeshSet.has(m)) return
+            if (!colorMeshSet.has(m)) {
+              // OPT: reuse equivalent static materials to lower memory pressure.
+              m.material = applyMaterialCache(m.material, materialCache)
+              return
+            }
             m.material = Array.isArray(m.material)
               ? m.material.map(mat => mat?.clone?.() ?? mat)
               : (m.material?.clone?.() ?? m.material)
@@ -2661,90 +3158,49 @@ export default function ThreeViewer() {
         controls.update()
 
         setLoading(false)
+        loadingLiveRef.current = false
         setTransitioning(false)
         setLabelsVisible(true)
-
-        /* ── Load nav mesh for pathfinding ── */
-        const navFile = MODELS[activeModel].nav
-        if (navFile) {
-          const navLoader = new GLTFLoader()
-          if (dracoLoaderRef.current) navLoader.setDRACOLoader(dracoLoaderRef.current)
-
-          navLoader.load(navFile, navGltf => {
-            if (stale) return
-            const navScene = navGltf.scene
-            /* Nav and building are centered independently; keep the
-              resulting offset so we can convert points scene<->nav
-              consistently during pathfinding and rendering. */
-            const navBox = new THREE.Box3().setFromObject(navScene)
-            const navCen = navBox.getCenter(new THREE.Vector3())
-            navScene.position.sub(navCen)
-            navOffsetRef.current.copy(modelCenterRef.current).sub(navCen)
-            navScene.updateMatrixWorld(true)
-
-            let navGeo = null
-            let navMatrix = new THREE.Matrix4()
-            navScene.traverse(n => {
-              if (n.isMesh && !navGeo) {
-                navGeo = n.geometry
-                navMatrix = n.matrixWorld.clone()
-              }
-            })
-            if (navGeo) {
-              const graph = buildNavGraph(navGeo, navMatrix)
-              navGraphRef.current = graph
-
-              const debugGroup = new THREE.Group()
-
-              const navFillGeo = navGeo.clone()
-              navFillGeo.applyMatrix4(navMatrix)
-              const navFillMesh = new THREE.Mesh(
-                navFillGeo,
-                new THREE.MeshBasicMaterial({
-                  color: 0x14b8a6,
-                  transparent: true,
-                  opacity: 0.12,
-                  side: THREE.DoubleSide,
-                  depthTest: false,
-                  depthWrite: false,
-                }),
-              )
-              navFillMesh.renderOrder = 860
-
-              const navWireGeo = navFillGeo.clone()
-              const navWireMesh = new THREE.Mesh(
-                navWireGeo,
-                new THREE.MeshBasicMaterial({
-                  color: 0x67e8f9,
-                  transparent: true,
-                  opacity: 0.58,
-                  wireframe: true,
-                  depthTest: false,
-                  depthWrite: false,
-                }),
-              )
-              navWireMesh.renderOrder = 861
-
-              debugGroup.add(navFillMesh)
-              debugGroup.add(navWireMesh)
-              debugGroup.visible = showNavDebugLiveRef.current && navModeLiveRef.current
-              scene.add(debugGroup)
-              navDebugRef.current = debugGroup
-            }
-          })
-        }
+        updateLoadProgress({ phase: 'Modelo listo', loaded: 1, total: 1 })
+        invalidateRenderRef.current()
       },
-      undefined,
+      xhr => {
+        if (stale) return
+        updateLoadProgress({
+          phase: 'Descargando modelo',
+          loaded: xhr?.loaded ?? 0,
+          total: xhr?.total ?? 0,
+        })
+      },
       err => {
         if (stale) return
         console.error('GLB error', err)
         setLoading(false)
+        loadingLiveRef.current = false
         setTransitioning(false)
+        if (loadingProxyRef.current) {
+          scene.remove(loadingProxyRef.current)
+          disposeObj(loadingProxyRef.current)
+          loadingProxyRef.current = null
+        }
+        invalidateRenderRef.current()
       }
     )
 
-    return () => { stale = true }
+    return () => {
+      stale = true
+      if (loadingProxyRef.current) {
+        scene.remove(loadingProxyRef.current)
+        disposeObj(loadingProxyRef.current)
+        loadingProxyRef.current = null
+      }
+    }
   }, [activeModel]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    loadingLiveRef.current = loading
+    invalidateRenderRef.current()
+  }, [loading])
 
   /* Route is now built directly in onClick handler, no effect needed */
 
@@ -2758,11 +3214,13 @@ export default function ThreeViewer() {
       controls.enableZoom = true
       controls.minPolarAngle = 0
       controls.maxPolarAngle = Math.PI
+      invalidateRenderRef.current()
       return
     }
 
     controls.minPolarAngle = 0
     controls.maxPolarAngle = Math.PI * 0.88
+    invalidateRenderRef.current()
   }, [navActive])
 
   useEffect(() => {
@@ -2771,6 +3229,7 @@ export default function ThreeViewer() {
     const visible = navMode && showNavDebug
     if (navDebugRef.current) navDebugRef.current.visible = visible
     if (navDebugPointsRef.current) navDebugPointsRef.current.visible = visible
+    invalidateRenderRef.current()
   }, [navMode, showNavDebug])
 
   useEffect(() => {
@@ -2787,6 +3246,7 @@ export default function ThreeViewer() {
       else
         setEntryColor(e, e.origColor)
     })
+    invalidateRenderRef.current()
   }, [search])
 
   function findSearchMatch(query) {
@@ -2921,6 +3381,28 @@ export default function ThreeViewer() {
               style={{ borderColor:'var(--color-border)', borderTopColor:'var(--color-primary)' }} />
             <p className="text-[13px] font-semibold" style={{ color:'var(--color-text)' }}>
               Cargando — {MODELS[activeModel].label}
+            </p>
+            <p className="text-[11px]" style={{ color:'var(--color-text-muted)' }}>
+              {loadProgress.phase}
+            </p>
+            <div
+              className="w-[min(360px,78vw)] h-2 rounded-full overflow-hidden"
+              style={{ background:'rgba(0,0,0,0.10)' }}
+            >
+              <div
+                className="h-full transition-all duration-200"
+                style={{
+                  // OPT: byte-aware progress feedback from XHR events/loading manager.
+                  width: `${Math.max(2, Math.min(100, loadProgress.percent))}%`,
+                  background: 'var(--color-primary)',
+                }}
+              />
+            </div>
+            <p className="text-[11px] tabular-nums" style={{ color:'var(--color-text-muted)' }}>
+              {Math.round(loadProgress.percent)}%
+              {loadProgress.total > 0
+                ? ` · ${formatProgressMB(loadProgress.loaded)} / ${formatProgressMB(loadProgress.total)}`
+                : (loadProgress.loaded > 0 ? ` · ${formatProgressMB(loadProgress.loaded)}` : '')}
             </p>
           </div>
         )}

@@ -1,7 +1,39 @@
+import { lazy, Suspense, useEffect, useState } from 'react'
 import ThreeViewer from '../components/viewer/ThreeViewer'
-import RightPanel  from '../components/panels/RightPanel'
+
+// OPT: split route UI bundle from the 3D viewer bundle.
+const RightPanel = lazy(() => import('../components/panels/RightPanel'))
 
 export default function HomePage() {
+  const [mountRightPanel, setMountRightPanel] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let idleId = null
+    let timeoutId = null
+
+    // OPT: schedule non-critical panel work when main thread is idle.
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(() => {
+        if (!cancelled) setMountRightPanel(true)
+      }, { timeout: 1200 })
+    } else {
+      timeoutId = window.setTimeout(() => {
+        if (!cancelled) setMountRightPanel(true)
+      }, 280)
+    }
+
+    return () => {
+      cancelled = true
+      if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
   return (
     /*
      * Layout de dos columnas a altura completa.
@@ -25,7 +57,23 @@ export default function HomePage() {
         className="home-panel shrink-0 overflow-hidden"
         style={{ width: 'clamp(260px, 28%, 340px)' }}
       >
-        <RightPanel />
+        {mountRightPanel ? (
+          <Suspense
+            fallback={(
+              <div className="h-full flex items-center justify-center text-[12px]"
+                style={{ color: 'var(--color-text-muted)' }}>
+                Cargando panel...
+              </div>
+            )}
+          >
+            <RightPanel />
+          </Suspense>
+        ) : (
+          <div className="h-full flex items-center justify-center text-[12px]"
+            style={{ color: 'var(--color-text-muted)' }}>
+            Preparando panel...
+          </div>
+        )}
       </section>
     </div>
   )
