@@ -1,18 +1,37 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import { auth } from '../services/firebase'
+import { getUserDataFromFirestore } from '../services/firestoreService'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
+  const [userData, setUserData] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
 
-  const login = (userData) => setUser(userData)
-  const logout = () => {
-    setUser(null)
-    localStorage.removeItem('token')
-  }
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser)
+        // Fetch user data from Firestore using UID
+        const firestoreData = await getUserDataFromFirestore(currentUser.uid)
+        setUserData(firestoreData)
+      } else {
+        setUser(null)
+        setUserData(null)
+      }
+      setAuthLoading(false)
+    })
+
+    return () => unsubscribe()
+  }, [])
+
+  const login = async (email, password) => signInWithEmailAndPassword(auth, email, password)
+  const logout = async () => signOut(auth)
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, userData, login, logout, isAuthenticated: !!user, authLoading, userRole: userData?.rol }}>
       {children}
     </AuthContext.Provider>
   )
