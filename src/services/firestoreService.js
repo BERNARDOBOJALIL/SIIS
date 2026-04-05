@@ -2,7 +2,7 @@ import {
   doc, getDoc, collection, query, where, getDocs,
   runTransaction, addDoc, serverTimestamp, setDoc, Timestamp, deleteDoc,
 } from 'firebase/firestore'
-import { db } from './firebase'
+import { db, dbSalones } from './firebase'
 
 const DAY_KEYS = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']
 
@@ -668,5 +668,60 @@ export async function syncWeeklySlotsFromBase(academicoId, dateInWeek = new Date
   return {
     created: slotsToCreate.length,
     deleted: slotsToDelete.length,
+  }
+}
+
+/**
+ * Obtiene todos los salones de la colección 'salones'
+ * @returns {Promise<Array>}
+ */
+export async function getSalones() {
+  try {
+    const salonesRef = collection(dbSalones, 'salones')
+    const snapshot = await getDocs(salonesRef)
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }))
+  } catch (error) {
+    console.error('Error fetching salones:', error)
+    return []
+  }
+}
+
+/**
+ * Obtiene un salón por su ID
+ * @param {string} salonId
+ * @returns {Promise<Object|null>}
+ */
+export async function getSalonById(salonId) {
+  try {
+    const salonRef = doc(dbSalones, 'salones', salonId)
+    const snapshot = await getDoc(salonRef)
+    if (!snapshot.exists()) return null
+    return { id: snapshot.id, ...snapshot.data() }
+  } catch (error) {
+    console.error('Error fetching salon:', error)
+    return null
+  }
+}
+
+/**
+ * Obtiene todos los salones de un mismo conjunto
+ * @param {number} idConjunto
+ * @returns {Promise<Array>}
+ */
+export async function getSalonesByConjunto(idConjunto) {
+  try {
+    const salonesRef = collection(dbSalones, 'salones')
+    const q = query(salonesRef, where('idConjunto', '==', idConjunto))
+    const snapshot = await getDocs(q)
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }))
+  } catch (error) {
+    console.error('Error fetching salones por conjunto:', error)
+    return []
   }
 }

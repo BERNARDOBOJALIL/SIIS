@@ -5,6 +5,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://agenteragsi
 export const ROUTES = {
   HOME: '/',
   APPOINTMENTS: '/citas',
+  SALONES: '/salones',
   LOGIN: '/login',
 }
 

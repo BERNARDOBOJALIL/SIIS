@@ -1,20 +1,12 @@
 import { useState, useEffect } from 'react'
+import { getSalones } from '../../services/firestoreService'
 import {
   School, CheckCircle2, XCircle, Clock3, CalendarDays,
-  MapPin, FlaskConical, Users, BookOpen, Settings,
-  Circle,
+  MapPin, FlaskConical, Users, BookOpen, Settings, Circle, ChevronRight,
 } from 'lucide-react'
+import HorarioGrid from '../common/HorarioGrid'
 
-/* ── Datos de demo ── */
-const SALONES = [
-  { id: 'A-101', nombre: 'Aula 101',       tipo: 'aula',   disponible: true  },
-  { id: 'A-102', nombre: 'Aula 102',       tipo: 'aula',   disponible: false },
-  { id: 'A-103', nombre: 'Aula 103',       tipo: 'aula',   disponible: true  },
-  { id: 'A-104', nombre: 'Aula 104',       tipo: 'aula',   disponible: false },
-  { id: 'B-201', nombre: 'Lab. Cómputo',   tipo: 'lab',    disponible: true  },
-  { id: 'B-202', nombre: 'Lab. Física',    tipo: 'lab',    disponible: false },
-  { id: 'C-301', nombre: 'Sala Juntas',    tipo: 'sala',   disponible: true  },
-]
+// Ya no va el array hardcodeado
 
 const LEYENDA = [
   { color: '#22c55e', label: 'Disponible',     Icon: CheckCircle2 },
@@ -31,6 +23,49 @@ const TIPO_ICON = {
   sala:  Users,
 }
 
+function estaDisponible(salon) {
+  const ahora = new Date()
+  const diaSemana = ahora.getDay() // 0=domingo, 6=sábado
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+
+  // Horario del edificio
+  const edificioCerrado =
+    diaSemana === 0 || // domingo
+    (diaSemana === 6 && minutos >= 14 * 60) // sábado después de las 14:00
+
+  if (edificioCerrado) return 'cerrado'
+
+  const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
+  if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+
+  const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
+  if (bloques.length === 0) return null
+
+  if (salon.tipoHorario === 'operacion') {
+    const abierto = bloques.some(b => {
+      if (b.dia !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return abierto ? true : 'cerrado'
+  }
+
+  if (salon.tipoHorario === 'clases') {
+    const ocupado = bloques.some(b => {
+      if (b.dia !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return ocupado ? false : true
+  }
+
+  return null
+}
+
 const DAYS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio',
                 'agosto','septiembre','octubre','noviembre','diciembre']
@@ -42,13 +77,26 @@ function useDateTime() {
 }
 
 export default function RightPanel() {
-  const now   = useDateTime()
-  const hh    = String(now.getHours()).padStart(2,'0')
-  const mm    = String(now.getMinutes()).padStart(2,'0')
-  const ss    = String(now.getSeconds()).padStart(2,'0')
-  const day   = DAYS[now.getDay()]
-  const date  = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
-  const libres = SALONES.filter(s => s.disponible).length
+  const now    = useDateTime()
+  const [salones,  setSalones]  = useState([])
+  const [loading,  setLoading]  = useState(true)
+  const [salonSel, setSalonSel] = useState(null)
+
+  useEffect(() => {
+    getSalones().then(data => {
+      setSalones(data)
+      setLoading(false)
+    })
+  }, [])
+
+  const hh  = String(now.getHours()).padStart(2, '0')
+  const mm  = String(now.getMinutes()).padStart(2, '0')
+  const ss  = String(now.getSeconds()).padStart(2, '0')
+  const day = DAYS[now.getDay()]
+  const date = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
+
+  const salonesConDisp = salones.map(s => ({ ...s, disp: estaDisponible(s) }))
+  const libres = salonesConDisp.filter(s => s.disp === true).length
 
   return (
     <aside
@@ -117,7 +165,7 @@ export default function RightPanel() {
             className="text-[11px] font-bold px-2 py-0.5 rounded-full"
             style={{ background: 'var(--color-primary)', color: '#fff' }}
           >
-            {libres}/{SALONES.length}
+            {libres}/{salonesConDisp.length}
           </span>
         </div>
 
@@ -127,7 +175,7 @@ export default function RightPanel() {
           <div
             className="h-full rounded-full transition-all duration-700"
             style={{
-              width:      `${Math.round((libres/SALONES.length)*100)}%`,
+              width: `${Math.round((libres / salonesConDisp.length) * 100)}%`,
               background: 'var(--color-primary)',
             }}
           />
@@ -135,36 +183,49 @@ export default function RightPanel() {
 
         {/* Lista de salones */}
         <div className="room-list flex flex-col gap-1.5 overflow-y-auto min-h-0">
-          {SALONES.map(salon => {
-            const TipoIcon = TIPO_ICON[salon.tipo] || BookOpen
-            return (
-              <div
-                key={salon.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-default"
-                style={{
-                    
-                  border:     `1px solid ${salon.disponible ? '#bbf7d0' : '#fecdd3'}`,
-                }}
-              >
-                <TipoIcon size={13}
-                  style={{ color: salon.disponible ? '#16a34a' : '#dc2626', flexShrink: 0 }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[12px] font-semibold leading-tight truncate"
-                    style={{ color: 'var(--color-text)' }}>
-                    {salon.nombre}
-                  </p>
-                  <p className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
-                    {salon.id}
-                  </p>
-                </div>
-                {salon.disponible
-                  ? <CheckCircle2 size={14} style={{ color:'#16a34a', flexShrink:0 }} />
-                  : <XCircle      size={14} style={{ color:'#dc2626', flexShrink:0 }} />
-                }
-              </div>
-            )
-          })}
+  {loading ? (
+    <p className="text-[12px] text-center py-4" style={{ color: 'var(--color-text-muted)' }}>
+      Cargando salones...
+    </p>
+  ) : (
+    salonesConDisp.map(salon => {
+      const TipoIcon = TIPO_ICON[salon.tipo] || BookOpen
+      const disponible = salon.disp
+      return (
+        <div
+          key={salon.id}
+          onClick={() => setSalonSel(salon)}
+          className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-pointer hover:opacity-80"
+          style={{
+            border: `1px solid ${
+  disponible === true     ? '#bbf7d0' :
+  disponible === false    ? '#fecdd3' :
+  disponible === 'cerrado'? '#e2e8f0' : 'var(--color-border)'
+}`,
+          }}
+        >
+          <TipoIcon size={13} style={{
+            color: disponible === true ? '#16a34a' : disponible === false ? '#dc2626' : '#94a3b8',
+            flexShrink: 0
+          }} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-semibold leading-tight truncate"
+              style={{ color: 'var(--color-text)' }}>
+              {salon.nombre}
+            </p>
+            <p className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+              {salon.nomenclatura} · {salon.piso}
+            </p>
+          </div>
+          {disponible === true     && <CheckCircle2 size={14} style={{ color: '#16a34a', flexShrink: 0 }} />}
+{disponible === false    && <XCircle      size={14} style={{ color: '#dc2626', flexShrink: 0 }} />}
+{disponible === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />}
+{disponible === null     && <Circle       size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />}
         </div>
+      )
+    })
+  )}
+</div>
       </section>
 
       {/* Divisor */}
@@ -203,6 +264,120 @@ export default function RightPanel() {
           </span>
         </div>
       </section>
+      {/* ── Detalle de salón ───────────────────────────── */}
+{salonSel && (
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style={{ background: 'rgba(0,0,0,0.4)' }}
+    onClick={() => setSalonSel(null)}
+  >
+    <div
+      className="w-full max-w-sm rounded-2xl p-5 flex flex-col gap-3 overflow-y-auto max-h-[80vh]"
+      style={{ background: 'var(--color-site-white)', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}
+      onClick={e => e.stopPropagation()}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--color-primary)' }}>
+            {salonSel.nomenclatura ?? '—'} · {salonSel.piso ?? '—'}
+          </p>
+          <h3 className="text-[16px] font-bold leading-tight"
+            style={{ color: 'var(--color-site-black)' }}>
+            {salonSel.nombre ?? salonSel.nomenclatura ?? '—'}
+          </h3>
+        </div>
+        <button onClick={() => setSalonSel(null)}
+          className="text-[20px] leading-none font-light"
+          style={{ color: 'var(--color-text-muted)' }}>✕</button>
+      </div>
+
+      {/* Disponibilidad */}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+        style={{ background:
+          salonSel.disp === true     ? '#f0fdf4' :
+          salonSel.disp === false    ? '#fef2f2' :
+          salonSel.disp === 'cerrado'? '#f8fafc' : 'var(--color-bg)'
+        }}>
+        {salonSel.disp === true     && <CheckCircle2 size={14} style={{ color: '#16a34a' }} />}
+        {salonSel.disp === false    && <XCircle      size={14} style={{ color: '#dc2626' }} />}
+        {salonSel.disp === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8' }} />}
+        {salonSel.disp === null     && <Circle       size={14} style={{ color: '#94a3b8' }} />}
+        <span className="text-[12px] font-semibold" style={{ color:
+          salonSel.disp === true     ? '#16a34a' :
+          salonSel.disp === false    ? '#dc2626' : '#94a3b8'
+        }}>
+          {salonSel.disp === true     ? 'Disponible ahora' :
+           salonSel.disp === false    ? 'Ocupado ahora'    :
+           salonSel.disp === 'cerrado'? 'Cerrado'          : 'Sin información'}
+        </span>
+      </div>
+
+      {/* Equipamiento */}
+      {Array.isArray(salonSel.equipamiento) && salonSel.equipamiento.filter(Boolean).length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+            style={{ color: 'var(--color-text-muted)' }}>Equipamiento</p>
+          <div className="flex flex-wrap gap-1.5">
+            {salonSel.equipamiento.filter(Boolean).map((eq, i) => (
+              <span key={i} className="text-[11px] px-2 py-0.5 rounded-full"
+                style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}>
+                {eq}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Responsables */}
+      {Array.isArray(salonSel.responsables) && salonSel.responsables.filter(r => r?.nombre).length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+            style={{ color: 'var(--color-text-muted)' }}>Responsable(s)</p>
+          {salonSel.responsables.filter(r => r?.nombre).map((r, i) => (
+            <div key={i} className="text-[12px]" style={{ color: 'var(--color-text)' }}>
+              <span className="font-semibold">{r.nombre}</span>
+              {r.cargo && <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}> · {r.cargo}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Horario */}
+{Array.isArray(salonSel.horario) && salonSel.horario.filter(b => b?.dia).length > 0 && (
+  <div>
+    <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+      style={{ color: 'var(--color-text-muted)' }}>
+      {salonSel.tipoHorario === 'operacion' ? 'Horario de operación' : 'Horario de clases'}
+    </p>
+    {salonSel.tipoHorario === 'clases' ? (
+      <HorarioGrid horario={salonSel.horario} />
+    ) : (
+      <div className="flex flex-col gap-1">
+        {salonSel.horario.filter(b => b?.dia).map((b, i) => (
+          <div key={i} className="flex items-center justify-between text-[12px] px-2 py-1 rounded-lg"
+            style={{ background: 'var(--color-bg)' }}>
+            <span className="capitalize font-medium" style={{ color: 'var(--color-text)' }}>{b.dia}</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>{b.inicio} – {b.fin}</span>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+)}
+
+      {/* Reserva */}
+      {salonSel.reserva === true && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+          style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
+          <CalendarDays size={13} style={{ color: 'var(--color-primary)' }} />
+          <span className="text-[12px]" style={{ color: 'var(--color-text)' }}>Este espacio permite reservas</span>
+        </div>
+      )}
+    </div>
+  </div>
+)}
     </aside>
   )
 }
