@@ -121,13 +121,13 @@ export default function RightPanel() {
         }}
       >
         <img
-          src="/logo_idit.png"
-          alt="IDIT"
+          src="/Logo_proyecto.svg"
+          alt="SIIS"
           className="h-14 w-auto object-contain"
         />
         <p className="text-[10px] uppercase tracking-widest font-semibold text-center"
           style={{ color: 'var(--color-text-muted)' }}>
-          Sistema de Información
+          Sistema de Información y Servicios
         </p>
 
         {/* Reloj */}
