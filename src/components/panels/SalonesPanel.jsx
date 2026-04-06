@@ -22,6 +22,13 @@ const TIPO_LABEL = {
   lobby:       'Lobby',
 }
 
+function normalizarDia(dia) {
+  return dia?.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim() ?? ''
+}
+
 function estaDisponible(salon) {
   const ahora = new Date()
   const diaSemana = ahora.getDay()
@@ -43,7 +50,7 @@ function estaDisponible(salon) {
 
   if (salon.tipoHorario === 'operacion') {
     const abierto = bloques.some(b => {
-      if (b.dia !== dia) return false
+      if (normalizarDia(b.dia) !== dia) return false
       const [hI, mI] = b.inicio.split(':').map(Number)
       const [hF, mF] = b.fin.split(':').map(Number)
       return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
@@ -53,7 +60,7 @@ function estaDisponible(salon) {
 
   if (salon.tipoHorario === 'clases') {
     const ocupado = bloques.some(b => {
-      if (b.dia !== dia) return false
+      if (normalizarDia(b.dia) !== dia) return false
       const [hI, mI] = b.inicio.split(':').map(Number)
       const [hF, mF] = b.fin.split(':').map(Number)
       return minutos >= hI * 60 + mI && minutos < hF * 60 + mF

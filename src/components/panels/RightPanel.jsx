@@ -23,15 +23,21 @@ const TIPO_ICON = {
   sala:  Users,
 }
 
+function normalizarDia(dia) {
+  return dia?.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim() ?? ''
+}
+
 function estaDisponible(salon) {
   const ahora = new Date()
-  const diaSemana = ahora.getDay() // 0=domingo, 6=sábado
+  const diaSemana = ahora.getDay()
   const minutos = ahora.getHours() * 60 + ahora.getMinutes()
 
-  // Horario del edificio
   const edificioCerrado =
-    diaSemana === 0 || // domingo
-    (diaSemana === 6 && minutos >= 14 * 60) // sábado después de las 14:00
+    diaSemana === 0 ||
+    (diaSemana === 6 && minutos >= 14 * 60)
 
   if (edificioCerrado) return 'cerrado'
 
@@ -45,7 +51,7 @@ function estaDisponible(salon) {
 
   if (salon.tipoHorario === 'operacion') {
     const abierto = bloques.some(b => {
-      if (b.dia !== dia) return false
+      if (normalizarDia(b.dia) !== dia) return false
       const [hI, mI] = b.inicio.split(':').map(Number)
       const [hF, mF] = b.fin.split(':').map(Number)
       return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
@@ -55,7 +61,7 @@ function estaDisponible(salon) {
 
   if (salon.tipoHorario === 'clases') {
     const ocupado = bloques.some(b => {
-      if (b.dia !== dia) return false
+      if (normalizarDia(b.dia) !== dia) return false
       const [hI, mI] = b.inicio.split(':').map(Number)
       const [hF, mF] = b.fin.split(':').map(Number)
       return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
