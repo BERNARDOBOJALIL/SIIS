@@ -16,6 +16,13 @@ const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
   { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_PA.glb', label: 'Planta Alta',    short: 'PA', entryName: 'Sólido27-1', origin: [22.3, -1.60, 29] },
 ]
+const ASSET_REVISION = '20260406-1'
+
+function withAssetRevision(url) {
+  if (!url) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}rev=${ASSET_REVISION}`
+}
 
 const C_HOVER    = new THREE.Color(0xff3b3b)
 const C_SELECTED = new THREE.Color(0xcc0000)
@@ -78,6 +85,26 @@ const MATERIAL_TEXTURE_KEYS = [
 function formatProgressMB(bytes = 0) {
   const mb = bytes / (1024 * 1024)
   return `${mb.toFixed(mb >= 10 ? 1 : 2)} MB`
+}
+
+function buildGlbErrorMessage(err, filePath) {
+  const raw = String(err?.message ?? err ?? '').trim()
+  const lower = raw.toLowerCase()
+
+  if (lower.includes('unexpected token') && lower.includes("token 'v'")) {
+    return `No se pudo cargar ${filePath}: parece ser un puntero de Git LFS o una caché vieja del Service Worker. Ejecuta 'git lfs pull' y limpia caché del navegador.`
+  }
+  if (lower.includes('version ht') || lower.includes('git-lfs.github.com/spec/v1')) {
+    return `No se pudo cargar ${filePath}: el archivo contiene un puntero de Git LFS (o respuesta cacheada antigua). Ejecuta 'git lfs pull' y limpia caché del navegador.`
+  }
+  if (lower.includes('404') || lower.includes('not found')) {
+    return `No se encontró ${filePath}. Verifica nombre y ruta dentro de /public.`
+  }
+  if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
+    return `No se pudo descargar ${filePath}. Revisa conexión de red y que el servidor de Vite esté activo.`
+  }
+
+  return `No se pudo cargar ${filePath}. ${raw || 'Error desconocido al parsear GLB.'}`
 }
 
 function disposeMaterialTextures(material, seenTextures = null) {
@@ -1038,6 +1065,7 @@ export default function ThreeViewer() {
   const [selectedName,  setSelectedName]  = useState(null)
   const [selectedStatus, setSelectedStatus] = useState(null)
   const [labelsEnabled, setLabelsEnabled] = useState(true)
+  const [assetError, setAssetError] = useState('')
 
   /* ── Navigation state ── */
   const navGraphRef  = useRef(null)      // built nav graph
@@ -1366,6 +1394,7 @@ export default function ThreeViewer() {
   function switchModel(idx) {
     if (idx === activeModel || transitioning) return
     setSearch('')
+    setAssetError('')
     exitNavigation()
     setActiveModel(idx)
   }
@@ -1536,7 +1565,7 @@ export default function ThreeViewer() {
 
     const promise = new Promise(resolve => {
       navLoader.load(
-        navFile,
+        withAssetRevision(navFile),
         navGltf => {
           const latest = navLoadStateRef.current
           if (latest.modelIndex !== activeModel) {
@@ -1588,6 +1617,8 @@ export default function ThreeViewer() {
             return
           }
           console.error('Nav GLB error', err)
+          setAssetError(buildGlbErrorMessage(err, navFile))
+          updateLoadProgress({ phase: 'Error al cargar navmesh', loaded: 0, total: 0 })
           resolve(null)
         },
       )
@@ -2994,6 +3025,7 @@ export default function ThreeViewer() {
 
     setLoading(true)
     loadingLiveRef.current = true
+    setAssetError('')
     updateLoadProgress({
       phase: 'Preparando carga',
       loaded: 0,
@@ -3067,7 +3099,7 @@ export default function ThreeViewer() {
     modelLoader.setMeshoptDecoder(MeshoptDecoder)
 
     modelLoader.load(
-      MODELS[activeModel].file,
+      withAssetRevision(MODELS[activeModel].file),
       gltf => {
         /* Si este efecto fue desmontado (StrictMode) no tocar nada */
         if (stale) return
@@ -3284,6 +3316,9 @@ export default function ThreeViewer() {
       err => {
         if (stale) return
         console.error('GLB error', err)
+        const modelFile = MODELS[activeModel]?.file ?? 'modelo'
+        setAssetError(buildGlbErrorMessage(err, modelFile))
+        updateLoadProgress({ phase: 'Error de carga', loaded: 0, total: 0 })
         setLoading(false)
         loadingLiveRef.current = false
         setTransitioning(false)
@@ -3510,6 +3545,28 @@ export default function ThreeViewer() {
       </div>
 
       <div ref={mountRef} className="flex-1 relative overflow-hidden">
+        {assetError && !loading && (
+          <div
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[min(640px,92vw)] rounded-xl px-3 py-2 flex items-start gap-2"
+            style={{
+              background: 'rgba(255, 241, 242, 0.98)',
+              border: '1px solid #fecdd3',
+              color: '#9f1239',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            }}
+          >
+            <XCircle size={16} className="shrink-0 mt-[2px]" />
+            <p className="text-[12px] leading-5">{assetError}</p>
+            <button
+              type="button"
+              onClick={() => setAssetError('')}
+              className="ml-auto text-[11px] font-semibold px-2 py-1 rounded-md transition-opacity hover:opacity-70"
+              style={{ color: '#9f1239', border: '1px solid #fda4af' }}
+            >
+              Cerrar
+            </button>
+          </div>
+        )}
         {loading && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3"
             style={{ background:'rgba(238,238,238,0.92)', backdropFilter:'blur(8px)' }}>

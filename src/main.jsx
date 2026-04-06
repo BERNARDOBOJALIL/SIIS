@@ -17,3 +17,14 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
     })
   })
 }
+
+if (!import.meta.env.PROD && 'serviceWorker' in navigator) {
+  // OPT: avoid stale model caches from previous prod sessions while developing.
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.getRegistrations()
+      .then(registrations => Promise.all(registrations.map(r => r.unregister())))
+      .catch(err => {
+        console.warn('Service worker cleanup failed', err)
+      })
+  })
+}

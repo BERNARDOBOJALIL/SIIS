@@ -1,4 +1,4 @@
-const SW_VERSION = 'siis-v1'
+const SW_VERSION = 'siis-v2'
 const MODEL_CACHE = `siis-model-cache-${SW_VERSION}`
 const MODEL_EXT_RE = /\.(glb|gltf|bin|ktx2|basis|wasm)$/i
 
