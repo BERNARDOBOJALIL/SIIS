@@ -2296,10 +2296,84 @@ export default function ThreeViewer() {
     v2.normalize()
     const dot = THREE.MathUtils.clamp(v1.dot(v2), -1, 1)
     const angle = Math.acos(dot) * (180 / Math.PI)
-    if (angle < 18) return { type: 'recto', angle }
+    if (angle < 30) return { type: 'recto', angle }
     if (angle > 150) return { type: 'retorno', angle }
     const cross = v1.x * v2.y - v1.y * v2.x
     return { type: cross > 0 ? 'derecha' : 'izquierda', angle }
+  }
+
+  function normalizeInstructionText(text) {
+    return String(text ?? '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+  }
+
+  function pushUniqueInstruction(list, text, voice = text) {
+    if (!text) return
+    const cleanText = String(text).replace(/\s+/g, ' ').trim()
+    if (!cleanText) return
+    const norm = normalizeInstructionText(cleanText)
+    if (list.length > 0) {
+      const lastNorm = normalizeInstructionText(list[list.length - 1].text)
+      if (lastNorm === norm) return
+    }
+    list.push({ text: cleanText, voice: String(voice ?? cleanText).replace(/\s+/g, ' ').trim() })
+  }
+
+  function pickTurnReferenceName(point) {
+    const refs = getWaypointReferences(point, 14)
+    if (refs.corridors.length > 0) return refs.corridors[0]
+    const nonSalon = refs.rooms.find(r => !r.isSalon)
+    if (nonSalon) return nonSalon.displayName
+    return refs.rooms[0]?.displayName ?? null
+  }
+
+  function collectVisibleTurnSteps(routePoints) {
+    const rough = []
+    for (let i = 1; i < routePoints.length - 1; i++) {
+      const prev = routePoints[i - 1]
+      const curr = routePoints[i]
+      const next = routePoints[i + 1]
+      const lenIn = curr.distanceTo(prev)
+      const lenOut = next.distanceTo(curr)
+      /* Ignore tiny micro-segments produced by snapping/smoothing artifacts. */
+      if (lenIn < 1.1 || lenOut < 1.1) continue
+
+      const turn = describeTurn(prev, curr, next)
+      if (turn.type === 'recto') continue
+      rough.push({ index: i, type: turn.type, angle: turn.angle })
+    }
+
+    if (rough.length <= 1) return rough
+
+    const filtered = []
+    for (const step of rough) {
+      const last = filtered[filtered.length - 1]
+      if (!last) {
+        filtered.push(step)
+        continue
+      }
+
+      /* Collapse immediate duplicates near the same corner, keep stronger angle. */
+      if (step.index - last.index <= 1) {
+        if (step.angle > last.angle) filtered[filtered.length - 1] = step
+        continue
+      }
+
+      if (step.type === last.type) {
+        const a = routePoints[last.index]
+        const b = routePoints[step.index]
+        if (a.distanceTo(b) < 2.2) {
+          if (step.angle > last.angle) filtered[filtered.length - 1] = step
+          continue
+        }
+      }
+
+      filtered.push(step)
+    }
+
+    return filtered
   }
 
   function generateRouteInstructions(routePoints, labels = {}) {
@@ -2310,7 +2384,6 @@ export default function ThreeViewer() {
     const originLabel = normalizeRoomLabel(originRaw)
     const destLabel = normalizeRoomLabel(destRaw)
     const instructions = []
-    const turnSteps = []
     const totalPoints = routePoints.length
 
     const destEntry = meshes.current.find(e =>
@@ -2318,47 +2391,48 @@ export default function ThreeViewer() {
     )
     const destKey = destEntry?.key ?? null
 
-    for (let i = 1; i < totalPoints - 1; i++) {
-      const turn = describeTurn(routePoints[i - 1], routePoints[i], routePoints[i + 1])
-      if (turn.type === 'recto') continue
-      turnSteps.push({ index: i, type: turn.type })
-    }
+    const turnSteps = collectVisibleTurnSteps(routePoints)
 
     const firstTurnIndex = turnSteps[0]?.index ?? (totalPoints - 1)
-    const firstStraight = buildStraightInstruction(
-      routePoints,
-      0,
-      firstTurnIndex,
-      destKey,
-      `Sal desde ${originLabel}. `,
-    )
-    if (firstStraight) instructions.push(firstStraight)
+    const firstSegmentLength = segmentLength(routePoints, 0, firstTurnIndex)
+    if (firstSegmentLength >= 3) {
+      const firstStraight = buildStraightInstruction(
+        routePoints,
+        0,
+        firstTurnIndex,
+        destKey,
+        `Sal desde ${originLabel}. `,
+      )
+      if (firstStraight) pushUniqueInstruction(instructions, firstStraight.text, firstStraight.voice)
+    } else {
+      pushUniqueInstruction(instructions, `Sal desde ${originLabel}.`)
+    }
 
     for (let t = 0; t < turnSteps.length; t++) {
       const currentTurn = turnSteps[t]
       const point = routePoints[currentTurn.index]
-      const prev = routePoints[Math.max(0, currentTurn.index - 1)]
-      const refs = getWaypointReferences(point, 14)
-      const approach = new THREE.Vector3().subVectors(point, prev)
-      const cue = buildRelativeCue(point, approach, refs)
+      const refName = pickTurnReferenceName(point)
 
       let action = 'Gira'
       if (currentTurn.type === 'izquierda') action = 'Gira a la izquierda'
       else if (currentTurn.type === 'derecha') action = 'Gira a la derecha'
       else if (currentTurn.type === 'retorno') action = 'Da vuelta en U'
 
-      let turnLine = action
-      if (cue) turnLine += ` ${cue}`
-      turnLine += '.'
-      instructions.push({ text: turnLine, voice: turnLine })
+      const turnLine = refName
+        ? `${action} en ${refName}.`
+        : `${action} en el siguiente cruce.`
+      pushUniqueInstruction(instructions, turnLine)
 
       const nextTurnIndex = turnSteps[t + 1]?.index ?? (totalPoints - 1)
-      const straight = buildStraightInstruction(routePoints, currentTurn.index, nextTurnIndex, destKey)
-      if (straight) instructions.push(straight)
+      const afterTurnLength = segmentLength(routePoints, currentTurn.index, nextTurnIndex)
+      /* Add straight guidance only on meaningful long spans to avoid repetitive noise. */
+      if (afterTurnLength >= 10) {
+        const straight = buildStraightInstruction(routePoints, currentTurn.index, nextTurnIndex, destKey)
+        if (straight) pushUniqueInstruction(instructions, straight.text, straight.voice)
+      }
     }
 
-    const arrivalLine = `Llegaste a ${destLabel}.`
-    instructions.push({ text: arrivalLine, voice: arrivalLine })
+    pushUniqueInstruction(instructions, `Llegaste a ${destLabel}.`)
 
     return instructions
   }
