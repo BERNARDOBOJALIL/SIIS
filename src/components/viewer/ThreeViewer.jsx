@@ -1080,7 +1080,11 @@ export default function ThreeViewer() {
   const [navMode,      setNavMode]      = useState(false)   // navigation panel open
   const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
   const [navDest,      setNavDest]       = useState(null)    // display label for dest
+  const navOriginLabelRef = useRef(null) // immediate origin label (avoids async state lag)
+  const navDestLabelRef = useRef(null)   // immediate dest label (avoids async state lag)
   const [navActive,    setNavActive]     = useState(false)   // route displayed
+  const [navInstructions, setNavInstructions] = useState([])  // array of instruction objects
+  const [navSpeaking, setNavSpeaking]   = useState(false)    // is audio playing
   const navModeLiveRef = useRef(false)
   const navLoadStateRef = useRef({ modelIndex: -1, loading: false, promise: null })
 
@@ -1120,6 +1124,16 @@ export default function ThreeViewer() {
         percent,
       }
     })
+  }
+
+  function setNavOriginValue(value) {
+    navOriginLabelRef.current = value
+    setNavOrigin(value)
+  }
+
+  function setNavDestValue(value) {
+    navDestLabelRef.current = value
+    setNavDest(value)
   }
 
   /* ── Limpia todas las etiquetas del overlay ── */
@@ -1637,12 +1651,15 @@ export default function ThreeViewer() {
   function exitNavigation() {
     clearRouteVisuals()
     clearNavMarkers()
+    window.speechSynthesis?.cancel()
+    setNavSpeaking(false)
     navOriginPt.current = null
     navDestPt.current = null
     setNavMode(false)
-    setNavOrigin(null)
-    setNavDest(null)
+    setNavOriginValue(null)
+    setNavDestValue(null)
     setNavActive(false)
+    setNavInstructions([])
     if (selectedRef.current) deselectEntry(selectedRef.current)
     isolateSelectedEntry(null)
     /* Restore all labels and return camera to default */
@@ -2050,6 +2067,373 @@ export default function ThreeViewer() {
     return simplifyOrthogonalPolyline(out, 0.35, graph)
   }
 
+  function joinNatural(items, limit = 2) {
+    const unique = [...new Set((items || []).filter(Boolean))].slice(0, limit)
+    if (unique.length === 0) return ''
+    if (unique.length === 1) return unique[0]
+    if (unique.length === 2) return `${unique[0]} y ${unique[1]}`
+    return `${unique.slice(0, -1).join(', ')} y ${unique[unique.length - 1]}`
+  }
+
+  function normalizeRoomLabel(name) {
+    const value = String(name ?? '').trim()
+    if (!value) return ''
+    const parts = value.split('/').map(p => p.trim()).filter(Boolean)
+    if (parts.length <= 1) return value
+    return joinNatural(parts, parts.length)
+  }
+
+  function splitNameParts(name) {
+    return String(name ?? '').split('/').map(p => p.trim()).filter(Boolean)
+  }
+
+  function isSalonLabelPart(part) {
+    const token = String(part ?? '').trim().toUpperCase()
+    if (!token) return false
+    if (!token.startsWith('J')) return false
+    if (token === 'J') return true
+    return /[0-9]/.test(token) || /^J[\s\-_.]?[A-Z0-9]+$/.test(token)
+  }
+
+  function salonUnitsFromName(name) {
+    const parts = splitNameParts(name)
+    if (parts.length === 0) return 0
+    return parts.filter(isSalonLabelPart).length
+  }
+
+  function inferEntrySpatialType(entry) {
+    const name = `${entry?.name ?? ''} ${entry?.rawName ?? ''}`.toLowerCase()
+    const corridorRegex = /(pasillo|corredor|hall|vestib|lobby|circulacion|andador|galeria|acceso)/
+    const roomRegex = /(salon|aula|sala|laboratorio|lab|oficina|cubiculo|taller|biblioteca|auditorio|bano|baño|sanitario|recepcion|recepción)/
+
+    if (corridorRegex.test(name)) return 'corridor'
+    if (roomRegex.test(name)) return 'room'
+
+    const bb = getEntryBounds(entry, 'full')
+    if (bb.isEmpty()) return 'room'
+    const size = bb.getSize(new THREE.Vector3())
+    const length = Math.max(size.x, size.z)
+    const width = Math.max(Math.min(size.x, size.z), 0.1)
+    const elongation = length / width
+    const footprint = size.x * size.z
+
+    if ((elongation >= 2.5 && length >= 7) || (elongation >= 2.0 && footprint >= 70 && width <= 8)) {
+      return 'corridor'
+    }
+    return 'room'
+  }
+
+  function getWaypointReferences(point, radius = 14) {
+    const ranked = []
+    meshes.current.forEach(entry => {
+      const center = getEntryWorldCenter(entry, 'focus')
+      const dist = center.distanceTo(point)
+      if (dist <= radius) ranked.push({ entry, center, dist })
+    })
+    ranked.sort((a, b) => a.dist - b.dist)
+
+    const corridors = []
+    const corridorSeen = new Set()
+    const rooms = []
+    const roomSeen = new Set()
+    ranked.slice(0, 10).forEach(({ entry, center, dist }) => {
+      const kind = inferEntrySpatialType(entry)
+      if (kind === 'corridor') {
+        const lower = entry.name.toLowerCase()
+        const corridorName = (/(pasillo|corredor|hall|vestib|lobby)/.test(lower))
+          ? entry.name
+          : `el pasillo junto a ${normalizeRoomLabel(entry.name)}`
+        if (!corridorSeen.has(corridorName)) {
+          corridorSeen.add(corridorName)
+          corridors.push(corridorName)
+        }
+      } else {
+        if (roomSeen.has(entry.key)) return
+        roomSeen.add(entry.key)
+        const salonUnits = salonUnitsFromName(entry.name)
+        rooms.push({
+          key: entry.key,
+          name: entry.name,
+          displayName: normalizeRoomLabel(entry.name),
+          center: center.clone(),
+          dist,
+          isSalon: salonUnits > 0,
+          salonUnits,
+        })
+      }
+    })
+
+    /* Infer corridor context when model names corridor geometry as a room-like area. */
+    if (corridors.length === 0 && rooms.length >= 2) {
+      corridors.push(`el pasillo entre ${rooms[0].displayName} y ${rooms[1].displayName}`)
+    }
+
+    return {
+      corridors,
+      rooms,
+      roomNames: rooms.map(r => r.displayName),
+    }
+  }
+
+  function buildRelativeCue(anchorPoint, forwardVec, refs, options = {}) {
+    const { preferNonSalon = false } = options
+    if (!refs) return ''
+    let candidates = refs.rooms || []
+    if (preferNonSalon) {
+      const nonSalon = candidates.filter(r => !r.isSalon)
+      if (nonSalon.length > 0) candidates = nonSalon
+    }
+
+    if (candidates.length === 0) {
+      if (refs.corridors.length > 0) return `por ${refs.corridors[0]}`
+      return ''
+    }
+
+    const candidate = candidates[0]
+    const fwd2 = new THREE.Vector2(forwardVec.x, forwardVec.z)
+    if (fwd2.lengthSq() < 0.0001) return `pasando ${candidate.displayName}`
+    fwd2.normalize()
+
+    const toRef = new THREE.Vector2(candidate.center.x - anchorPoint.x, candidate.center.z - anchorPoint.z)
+    if (toRef.lengthSq() < 0.0001) return `pasando ${candidate.displayName}`
+    toRef.normalize()
+
+    const dot = fwd2.dot(toRef)
+    if (dot > 0.35) return `pasando ${candidate.displayName}`
+    return `pasando ${candidate.displayName}`
+  }
+
+  function analyzeSalonsAlongStraight(routePoints, startIndex, endIndex, destKey = null) {
+    if (endIndex <= startIndex) return { count: 0, names: [] }
+    const maxDistToSegment = 4.8
+    const counted = new Set()
+    let total = 0
+    const names = []
+
+    meshes.current.forEach(entry => {
+      if (entry.key === destKey) return
+      if (counted.has(entry.key)) return
+      const units = salonUnitsFromName(entry.name)
+      if (units <= 0) return
+
+      const c = getEntryWorldCenter(entry, 'focus')
+      let bestDist = Infinity
+
+      for (let i = startIndex + 1; i <= endIndex; i++) {
+        const a = routePoints[i - 1]
+        const b = routePoints[i]
+        const abx = b.x - a.x
+        const abz = b.z - a.z
+        const abLenSq = abx * abx + abz * abz
+        if (abLenSq < 0.0001) continue
+
+        let t = ((c.x - a.x) * abx + (c.z - a.z) * abz) / abLenSq
+        t = Math.max(0, Math.min(1, t))
+        const qx = a.x + abx * t
+        const qz = a.z + abz * t
+        const dist = Math.hypot(c.x - qx, c.z - qz)
+        if (dist < bestDist) bestDist = dist
+      }
+
+      if (bestDist > maxDistToSegment) return
+      counted.add(entry.key)
+      total += units
+      names.push(normalizeRoomLabel(entry.name))
+    })
+
+    return {
+      count: total,
+      names: [...new Set(names)],
+    }
+  }
+
+  function segmentLength(routePoints, startIndex, endIndex) {
+    if (endIndex <= startIndex) return 0
+    let len = 0
+    for (let i = startIndex + 1; i <= endIndex; i++) {
+      len += routePoints[i].distanceTo(routePoints[i - 1])
+    }
+    return len
+  }
+
+  function buildStraightInstruction(routePoints, startIndex, endIndex, destKey, prefix = '') {
+    if (endIndex <= startIndex) return null
+
+    const segmentLen = segmentLength(routePoints, startIndex, endIndex)
+    const isLongSegment = segmentLen >= 16
+    const salonInfo = analyzeSalonsAlongStraight(routePoints, startIndex, endIndex, destKey)
+    const salonCount = salonInfo.count
+    const salonWord = salonCount === 1 ? 'salon' : 'salones'
+    const anchorPoint = routePoints[endIndex]
+    const forwardVec = new THREE.Vector3().subVectors(routePoints[endIndex], routePoints[startIndex])
+    const refs = getWaypointReferences(anchorPoint, 13)
+    const cue = buildRelativeCue(anchorPoint, forwardVec, refs, {
+      preferNonSalon: salonCount === 0,
+    })
+
+    let line = `${prefix}Continua recto`
+    if (salonCount > 0) {
+      if (isLongSegment) {
+        line += ` pasando ${salonCount} ${salonWord}`
+      } else {
+        const namedSalons = joinNatural(salonInfo.names, 2)
+        if (namedSalons) line += ` pasando ${namedSalons}`
+        else line += ` pasando ${salonCount} ${salonWord}`
+      }
+    }
+    if (salonCount === 0 && cue) line += `, ${cue}`
+    if (salonCount > 0 && isLongSegment && refs.corridors.length > 0) line += ` por ${refs.corridors[0]}`
+    line += '.'
+
+    return { text: line, voice: line }
+  }
+
+  function describeTurn(prev, current, next) {
+    const v1 = new THREE.Vector2(current.x - prev.x, current.z - prev.z)
+    const v2 = new THREE.Vector2(next.x - current.x, next.z - current.z)
+    if (v1.lengthSq() < 0.0001 || v2.lengthSq() < 0.0001) return { type: 'recto', angle: 0 }
+    v1.normalize()
+    v2.normalize()
+    const dot = THREE.MathUtils.clamp(v1.dot(v2), -1, 1)
+    const angle = Math.acos(dot) * (180 / Math.PI)
+    if (angle < 18) return { type: 'recto', angle }
+    if (angle > 150) return { type: 'retorno', angle }
+    const cross = v1.x * v2.y - v1.y * v2.x
+    return { type: cross > 0 ? 'derecha' : 'izquierda', angle }
+  }
+
+  function generateRouteInstructions(routePoints, labels = {}) {
+    if (!routePoints || routePoints.length < 2) return []
+
+    const originRaw = labels.origin ?? navOriginLabelRef.current ?? navOrigin ?? 'tu ubicacion'
+    const destRaw = labels.dest ?? navDestLabelRef.current ?? navDest ?? 'destino'
+    const originLabel = normalizeRoomLabel(originRaw)
+    const destLabel = normalizeRoomLabel(destRaw)
+    const instructions = []
+    const turnSteps = []
+    const totalPoints = routePoints.length
+
+    const destEntry = meshes.current.find(e =>
+      e.name === destRaw || e.name === destLabel || normalizeRoomLabel(e.name) === destLabel,
+    )
+    const destKey = destEntry?.key ?? null
+
+    for (let i = 1; i < totalPoints - 1; i++) {
+      const turn = describeTurn(routePoints[i - 1], routePoints[i], routePoints[i + 1])
+      if (turn.type === 'recto') continue
+      turnSteps.push({ index: i, type: turn.type })
+    }
+
+    const firstTurnIndex = turnSteps[0]?.index ?? (totalPoints - 1)
+    const firstStraight = buildStraightInstruction(
+      routePoints,
+      0,
+      firstTurnIndex,
+      destKey,
+      `Sal desde ${originLabel}. `,
+    )
+    if (firstStraight) instructions.push(firstStraight)
+
+    for (let t = 0; t < turnSteps.length; t++) {
+      const currentTurn = turnSteps[t]
+      const point = routePoints[currentTurn.index]
+      const prev = routePoints[Math.max(0, currentTurn.index - 1)]
+      const refs = getWaypointReferences(point, 14)
+      const approach = new THREE.Vector3().subVectors(point, prev)
+      const cue = buildRelativeCue(point, approach, refs)
+
+      let action = 'Gira'
+      if (currentTurn.type === 'izquierda') action = 'Gira a la izquierda'
+      else if (currentTurn.type === 'derecha') action = 'Gira a la derecha'
+      else if (currentTurn.type === 'retorno') action = 'Da vuelta en U'
+
+      let turnLine = action
+      if (cue) turnLine += ` ${cue}`
+      turnLine += '.'
+      instructions.push({ text: turnLine, voice: turnLine })
+
+      const nextTurnIndex = turnSteps[t + 1]?.index ?? (totalPoints - 1)
+      const straight = buildStraightInstruction(routePoints, currentTurn.index, nextTurnIndex, destKey)
+      if (straight) instructions.push(straight)
+    }
+
+    const arrivalLine = `Llegaste a ${destLabel}.`
+    instructions.push({ text: arrivalLine, voice: arrivalLine })
+
+    return instructions
+  }
+
+  function pickBestSpanishVoice() {
+    if (!window.speechSynthesis) return null
+    const voices = window.speechSynthesis.getVoices() || []
+    if (voices.length === 0) return null
+
+    const scoreVoice = (v) => {
+      const lang = String(v.lang || '').toLowerCase()
+      const name = String(v.name || '').toLowerCase()
+      let score = 0
+
+      if (lang.startsWith('es-mx')) score += 55
+      else if (lang.startsWith('es-es')) score += 45
+      else if (lang.startsWith('es')) score += 35
+
+      if (/natural|neural/.test(name)) score += 40
+      if (/microsoft|google|siri|apple/.test(name)) score += 16
+      if (/sabina|helena|paulina|jorge|dalia|sofia|sof[ií]a|alma/.test(name)) score += 14
+      if (/desktop/.test(name)) score -= 5
+
+      return score
+    }
+
+    return [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0] || null
+  }
+
+  function speakInstructions(instructions) {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    setNavSpeaking(true)
+
+    const voice = pickBestSpanishVoice()
+
+    let index = 0
+    const speakNext = () => {
+      if (index >= instructions.length || !navModeLiveRef.current) {
+        setNavSpeaking(false)
+        return
+      }
+      const instr = instructions[index]
+      const utterance = new SpeechSynthesisUtterance(instr.voice)
+      utterance.lang = voice?.lang || 'es-MX'
+      utterance.rate = 0.91
+      utterance.pitch = 1.03
+      utterance.volume = 1
+      if (voice) utterance.voice = voice
+
+      utterance.onend = () => {
+        index++
+        const pause = 430 + Math.min(320, Math.round(instr.voice.length * 3.5))
+        setTimeout(speakNext, pause)
+      }
+      utterance.onerror = () => {
+        index++
+        speakNext()
+      }
+
+      window.speechSynthesis.speak(utterance)
+    }
+
+    speakNext()
+  }
+
+  function toggleInstructionAudio() {
+    if (navSpeaking) {
+      window.speechSynthesis?.cancel()
+      setNavSpeaking(false)
+    } else {
+      speakInstructions(navInstructions)
+    }
+  }
+
   async function buildRoute() {
     const graph = navGraphRef.current ?? await ensureNavGraphLoaded()
     const fromScene = navOriginPt.current
@@ -2265,6 +2649,17 @@ export default function ThreeViewer() {
     if (routeFrame) {
       startCamAnim(routeFrame.pos, routeFrame.target)
     }
+
+    /* Generate and speak instructions */
+    const instructions = generateRouteInstructions(routePoints, {
+      origin: navOriginLabelRef.current,
+      dest: navDestLabelRef.current,
+    })
+    setNavInstructions(instructions)
+    if (instructions.length > 0) {
+      speakInstructions(instructions)
+    }
+
     setNavActive(true)
     invalidateRenderRef.current()
   }
@@ -2273,15 +2668,18 @@ export default function ThreeViewer() {
     if (selectedRef.current) deselectEntry(selectedRef.current)
     isolateSelectedEntry(null)
     navDestPt.current = null
-    setNavDest(null)
+    setNavDestValue(null)
     setNavActive(false)
+    setNavInstructions([])
+    window.speechSynthesis?.cancel()
+    setNavSpeaking(false)
     clearRouteVisuals()
     clearNavMarkers()
     /* Fixed origin per floor */
     const o = MODELS[activeModel].origin
     const originPt = new THREE.Vector3(o[0], o[1], o[2])
     navOriginPt.current = originPt
-    setNavOrigin('Entrada')
+    setNavOriginValue('Entrada')
     addNavMarker(originPt, 0x22cc44, 'origin')
     setNavMode(true)
 
@@ -2304,7 +2702,11 @@ export default function ThreeViewer() {
       const pt = center.clone()
 
       navDestPt.current = pt
-      setNavDest(entry.name)
+      setNavDestValue(entry.name)
+      setNavActive(false)
+      setNavInstructions([])
+      window.speechSynthesis?.cancel()
+      setNavSpeaking(false)
       clearRouteVisuals()
       while (navMarkersRef.current.length > 1) {
         const old = navMarkersRef.current.pop()
@@ -2409,7 +2811,11 @@ export default function ThreeViewer() {
 
       /* Origin is always fixed (set in enterNavMode), click only sets dest */
       navDestPt.current = pt
-      setNavDest(label)
+      setNavDestValue(label)
+      setNavActive(false)
+      setNavInstructions([])
+      window.speechSynthesis?.cancel()
+      setNavSpeaking(false)
       clearRouteVisuals()
       /* Keep only origin marker, remove old dest marker */
       while (navMarkersRef.current.length > 1) {
@@ -3684,8 +4090,11 @@ export default function ThreeViewer() {
                       R.current.scene?.remove(old)
                     }
                     navDestPt.current = null
-                    setNavDest(null)
+                    setNavDestValue(null)
                     setNavActive(false)
+                    setNavInstructions([])
+                    window.speechSynthesis?.cancel()
+                    setNavSpeaking(false)
                     setLabelsVisible(true)
                   }}
                 >
@@ -3693,6 +4102,30 @@ export default function ThreeViewer() {
                   Cambiar destino
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Instructions panel ── */}
+        {navActive && navInstructions.length > 0 && (
+          <div className="nav-instructions-panel">
+            <div className="nav-instructions-header">
+              <span>Instrucciones</span>
+              <button
+                className="nav-instructions-audio-btn"
+                onClick={toggleInstructionAudio}
+                title={navSpeaking ? 'Pausar audio' : 'Reproducir audio'}
+              >
+                {navSpeaking ? '⏸️' : '🔊'}
+              </button>
+            </div>
+            <div className="nav-instructions-list">
+              {navInstructions.map((instr, idx) => (
+                <div key={idx} className="nav-instruction-item">
+                  <span className="nav-instruction-num">{idx + 1}</span>
+                  <span className="nav-instruction-text">{instr.text}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
