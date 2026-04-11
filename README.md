@@ -1,16 +1,82 @@
-# React + Vite
+# SIIS - React + Vite
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicacion web SIIS construida con React y Vite.
 
-Currently, two official plugins are available:
+## Requisitos
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Node.js 18+
+- npm
 
-## React Compiler
+## Scripts principales
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Desarrollo: `npm run dev`
+- Build: `npm run build`
+- Lint: `npm run lint`
+- Tests: `npm run test`
+- Cobertura: `npm run test:coverage`
 
-## Expanding the ESLint configuration
+## Evidencia de QA
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+La evidencia de pruebas y verificaciones ejecutadas se encuentra en:
+
+- [reports/qa-evidence/06-reporte-ejecutivo.md](reports/qa-evidence/06-reporte-ejecutivo.md)
+- [reports/qa-evidence/00-resumen-evidencia.md](reports/qa-evidence/00-resumen-evidencia.md)
+- [reports/qa-evidence/01-lint.log](reports/qa-evidence/01-lint.log)
+- [reports/qa-evidence/02-tests.log](reports/qa-evidence/02-tests.log)
+- [reports/qa-evidence/03-coverage.log](reports/qa-evidence/03-coverage.log)
+- [reports/qa-evidence/04-build.log](reports/qa-evidence/04-build.log)
+- [reports/qa-evidence/05-audit-prod.log](reports/qa-evidence/05-audit-prod.log)
+
+## Nota tecnica: fix GLB (Git LFS + Service Worker cache stale)
+
+Este proyecto incorporo una correccion para el error de carga de modelos GLB:
+
+`GLB error SyntaxError: Unexpected token 'v', "version ht"... is not valid JSON`
+
+### Causa
+
+El loader de Three.js puede recibir:
+
+- Un puntero de Git LFS (texto `version https://git-lfs.github.com/spec/v1`), o
+- Una respuesta vieja cacheada por Service Worker.
+
+En ambos casos, `GLTFLoader` espera binario `glTF` y falla.
+
+### Cambios aplicados
+
+1. [src/components/viewer/ThreeViewer.jsx](src/components/viewer/ThreeViewer.jsx)
+2. [src/main.jsx](src/main.jsx)
+3. [public/sw.js](public/sw.js)
+
+Resumen funcional:
+
+- Cache busting para assets 3D (query `rev=...`).
+- Mensajes de error amigables para casos LFS, cache stale, 404 y red.
+- Estado visual de error en el visor.
+- Limpieza automatica de service workers en desarrollo.
+- Incremento de version de cache del SW para invalidar cache vieja.
+
+### Verificacion rapida GLB
+
+Comprobar firma binaria de un GLB:
+
+```bash
+head -c 4 "public/assempbfinal 1.glb" | xxd -p
+```
+
+Debe devolver `676c5446` (equivale a `glTF`).
+
+Si usan Git LFS en su maquina:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+### Resolucion de cache en navegador
+
+Si el GLB local es correcto pero la app sigue fallando:
+
+1. Hard refresh (`Ctrl+Shift+R`).
+2. DevTools -> Application -> Service Workers -> Unregister.
+3. DevTools -> Application -> Clear storage -> Clear site data.

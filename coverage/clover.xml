@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1775917851985" clover="3.2.0">
+  <project timestamp="1775917851985" name="All files">
+    <metrics statements="150" coveredstatements="137" conditionals="51" coveredconditionals="37" methods="52" coveredmethods="42" elements="253" coveredelements="216" complexity="0" loc="150" ncloc="150" packages="6" files="10" classes="10"/>
+    <package name="constants">
+      <metrics statements="3" coveredstatements="3" conditionals="2" coveredconditionals="1" methods="0" coveredmethods="0"/>
+      <file name="index.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\constants\index.js">
+        <metrics statements="3" coveredstatements="3" conditionals="2" coveredconditionals="1" methods="0" coveredmethods="0"/>
+        <line num="2" count="2" type="cond" truecount="1" falsecount="1"/>
+        <line num="5" count="2" type="stmt"/>
+        <line num="13" count="2" type="stmt"/>
+      </file>
+    </package>
+    <package name="context">
+      <metrics statements="20" coveredstatements="19" conditionals="4" coveredconditionals="3" methods="7" coveredmethods="5"/>
+      <file name="AuthContext.jsx" path="C:\Users\Windows\Desktop\ASE\SIIS\src\context\AuthContext.jsx">
+        <metrics statements="20" coveredstatements="19" conditionals="4" coveredconditionals="3" methods="7" coveredmethods="5"/>
+        <line num="6" count="1" type="stmt"/>
+        <line num="9" count="4" type="stmt"/>
+        <line num="10" count="4" type="stmt"/>
+        <line num="11" count="4" type="stmt"/>
+        <line num="13" count="4" type="stmt"/>
+        <line num="14" count="2" type="stmt"/>
+        <line num="15" count="2" type="cond" truecount="2" falsecount="0"/>
+        <line num="16" count="1" type="stmt"/>
+        <line num="18" count="1" type="stmt"/>
+        <line num="19" count="1" type="stmt"/>
+        <line num="21" count="1" type="stmt"/>
+        <line num="22" count="1" type="stmt"/>
+        <line num="24" count="2" type="stmt"/>
+        <line num="27" count="2" type="stmt"/>
+        <line num="30" count="4" type="stmt"/>
+        <line num="31" count="0" type="stmt"/>
+        <line num="33" count="4" type="stmt"/>
+        <line num="41" count="4" type="stmt"/>
+        <line num="42" count="4" type="cond" truecount="1" falsecount="1"/>
+        <line num="43" count="4" type="stmt"/>
+      </file>
+    </package>
+    <package name="hooks">
+      <metrics statements="97" coveredstatements="90" conditionals="22" coveredconditionals="12" methods="28" coveredmethods="26"/>
+      <file name="useChat.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\hooks\useChat.js">
+        <metrics statements="36" coveredstatements="32" conditionals="8" coveredconditionals="3" methods="10" coveredmethods="8"/>
+        <line num="9" count="7" type="stmt"/>
+        <line num="10" count="7" type="stmt"/>
+        <line num="11" count="7" type="stmt"/>
+        <line num="12" count="7" type="stmt"/>
+        <line num="14" count="4" type="stmt"/>
+        <line num="15" count="4" type="cond" truecount="1" falsecount="1"/>
+        <line num="16" count="4" type="stmt"/>
+        <line num="17" count="4" type="stmt"/>
+        <line num="18" count="4" type="stmt"/>
+        <line num="22" count="7" type="stmt"/>
+        <line num="23" count="4" type="stmt"/>
+        <line num="24" count="0" type="stmt"/>
+        <line num="30" count="7" type="stmt"/>
+        <line num="31" count="2" type="cond" truecount="1" falsecount="1"/>
+        <line num="33" count="2" type="stmt"/>
+        <line num="34" count="2" type="stmt"/>
+        <line num="37" count="2" type="stmt"/>
+        <line num="43" count="2" type="stmt"/>
+        <line num="45" count="2" type="stmt"/>
+        <line num="47" count="2" type="stmt"/>
+        <line num="50" count="1" type="stmt"/>
+        <line num="56" count="1" type="stmt"/>
+        <line num="58" count="1" type="cond" truecount="1" falsecount="1"/>
+        <line num="60" count="1" type="stmt"/>
+        <line num="66" count="1" type="stmt"/>
+        <line num="68" count="2" type="stmt"/>
+        <line num="75" count="7" type="stmt"/>
+        <line num="76" count="1" type="stmt"/>
+        <line num="77" count="1" type="stmt"/>
+        <line num="78" count="1" type="stmt"/>
+        <line num="79" count="1" type="stmt"/>
+        <line num="81" count="0" type="cond" truecount="0" falsecount="2"/>
+        <line num="88" count="7" type="stmt"/>
+        <line num="89" count="0" type="stmt"/>
+        <line num="90" count="0" type="stmt"/>
+        <line num="93" count="7" type="stmt"/>
+      </file>
+      <file name="useLocalStorage.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\hooks\useLocalStorage.js">
+        <metrics statements="9" coveredstatements="9" conditionals="2" coveredconditionals="2" methods="3" coveredmethods="3"/>
+        <line num="9" count="4" type="stmt"/>
+        <line num="10" count="3" type="stmt"/>
+        <line num="11" count="3" type="stmt"/>
+        <line num="12" count="3" type="cond" truecount="2" falsecount="0"/>
+        <line num="14" count="1" type="stmt"/>
+        <line num="18" count="4" type="stmt"/>
+        <line num="19" count="4" type="stmt"/>
+        <line num="20" count="4" type="stmt"/>
+        <line num="24" count="4" type="stmt"/>
+      </file>
+      <file name="useNotifications.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\hooks\useNotifications.js">
+        <metrics statements="24" coveredstatements="24" conditionals="6" coveredconditionals="4" methods="7" coveredmethods="7"/>
+        <line num="6" count="6" type="stmt"/>
+        <line num="7" count="6" type="stmt"/>
+        <line num="8" count="6" type="stmt"/>
+        <line num="10" count="6" type="stmt"/>
+        <line num="11" count="3" type="cond" truecount="2" falsecount="0"/>
+        <line num="12" count="1" type="stmt"/>
+        <line num="13" count="1" type="stmt"/>
+        <line num="14" count="1" type="stmt"/>
+        <line num="17" count="2" type="stmt"/>
+        <line num="18" count="2" type="stmt"/>
+        <line num="19" count="2" type="stmt"/>
+        <line num="21" count="2" type="stmt"/>
+        <line num="24" count="1" type="stmt"/>
+        <line num="25" count="2" type="stmt"/>
+        <line num="27" count="1" type="cond" truecount="1" falsecount="1"/>
+        <line num="28" count="1" type="cond" truecount="1" falsecount="1"/>
+        <line num="29" count="1" type="stmt"/>
+        <line num="32" count="1" type="stmt"/>
+        <line num="33" count="1" type="stmt"/>
+        <line num="34" count="1" type="stmt"/>
+        <line num="37" count="1" type="stmt"/>
+        <line num="38" count="1" type="stmt"/>
+        <line num="42" count="2" type="stmt"/>
+        <line num="45" count="6" type="stmt"/>
+      </file>
+      <file name="useStudentCitas.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\hooks\useStudentCitas.js">
+        <metrics statements="28" coveredstatements="25" conditionals="6" coveredconditionals="3" methods="8" coveredmethods="8"/>
+        <line num="15" count="5" type="stmt"/>
+        <line num="16" count="5" type="stmt"/>
+        <line num="17" count="5" type="stmt"/>
+        <line num="19" count="5" type="stmt"/>
+        <line num="20" count="3" type="cond" truecount="1" falsecount="1"/>
+        <line num="21" count="0" type="stmt"/>
+        <line num="22" count="0" type="stmt"/>
+        <line num="23" count="0" type="stmt"/>
+        <line num="26" count="3" type="stmt"/>
+        <line num="27" count="3" type="stmt"/>
+        <line num="28" count="3" type="stmt"/>
+        <line num="30" count="3" type="stmt"/>
+        <line num="33" count="1" type="stmt"/>
+        <line num="34" count="2" type="stmt"/>
+        <line num="36" count="1" type="cond" truecount="1" falsecount="1"/>
+        <line num="37" count="1" type="cond" truecount="1" falsecount="1"/>
+        <line num="38" count="1" type="stmt"/>
+        <line num="41" count="1" type="stmt"/>
+        <line num="42" count="1" type="stmt"/>
+        <line num="43" count="1" type="stmt"/>
+        <line num="46" count="1" type="stmt"/>
+        <line num="47" count="1" type="stmt"/>
+        <line num="51" count="3" type="stmt"/>
+        <line num="54" count="5" type="stmt"/>
+        <line num="55" count="1" type="stmt"/>
+        <line num="57" count="1" type="stmt"/>
+        <line num="62" count="1" type="stmt"/>
+        <line num="73" count="5" type="stmt"/>
+      </file>
+    </package>
+    <package name="routes">
+      <metrics statements="1" coveredstatements="1" conditionals="0" coveredconditionals="0" methods="1" coveredmethods="1"/>
+      <file name="AppRouter.jsx" path="C:\Users\Windows\Desktop\ASE\SIIS\src\routes\AppRouter.jsx">
+        <metrics statements="1" coveredstatements="1" conditionals="0" coveredconditionals="0" methods="1" coveredmethods="1"/>
+        <line num="10" count="3" type="stmt"/>
+      </file>
+    </package>
+    <package name="services">
+      <metrics statements="25" coveredstatements="20" conditionals="17" coveredconditionals="15" methods="12" coveredmethods="6"/>
+      <file name="chatService.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\services\chatService.js">
+        <metrics statements="11" coveredstatements="10" conditionals="10" coveredconditionals="8" methods="5" coveredmethods="3"/>
+        <line num="7" count="1" type="cond" truecount="2" falsecount="0"/>
+        <line num="10" count="3" type="stmt"/>
+        <line num="15" count="3" type="stmt"/>
+        <line num="20" count="3" type="cond" truecount="2" falsecount="0"/>
+        <line num="21" count="1" type="stmt"/>
+        <line num="22" count="1" type="cond" truecount="1" falsecount="2"/>
+        <line num="25" count="2" type="stmt"/>
+        <line num="35" count="2" type="stmt"/>
+        <line num="49" count="0" type="stmt"/>
+        <line num="58" count="1" type="stmt"/>
+        <line num="63" count="1" type="stmt"/>
+      </file>
+      <file name="http.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\services\http.js">
+        <metrics statements="14" coveredstatements="10" conditionals="7" coveredconditionals="7" methods="7" coveredmethods="3"/>
+        <line num="6" count="1" type="stmt"/>
+        <line num="11" count="3" type="stmt"/>
+        <line num="12" count="3" type="stmt"/>
+        <line num="18" count="3" type="stmt"/>
+        <line num="20" count="3" type="cond" truecount="2" falsecount="0"/>
+        <line num="21" count="2" type="stmt"/>
+        <line num="22" count="2" type="cond" truecount="2" falsecount="0"/>
+        <line num="25" count="1" type="stmt"/>
+        <line num="28" count="1" type="stmt"/>
+        <line num="29" count="3" type="stmt"/>
+        <line num="30" count="0" type="stmt"/>
+        <line num="31" count="0" type="stmt"/>
+        <line num="32" count="0" type="stmt"/>
+        <line num="33" count="0" type="stmt"/>
+      </file>
+    </package>
+    <package name="utils">
+      <metrics statements="4" coveredstatements="4" conditionals="6" coveredconditionals="6" methods="4" coveredmethods="4"/>
+      <file name="helpers.js" path="C:\Users\Windows\Desktop\ASE\SIIS\src\utils\helpers.js">
+        <metrics statements="4" coveredstatements="4" conditionals="6" coveredconditionals="6" methods="4" coveredmethods="4"/>
+        <line num="7" count="1" type="stmt"/>
+        <line num="15" count="2" type="stmt"/>
+        <line num="24" count="2" type="cond" truecount="2" falsecount="0"/>
+        <line num="31" count="1" type="stmt"/>
+      </file>
+    </package>
+  </project>
+</coverage>
