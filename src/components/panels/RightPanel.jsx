@@ -27,6 +27,12 @@ function normalizarDia(dia) {
 }
 
 function estaDisponible(salon) {
+  // Si no tiene horario ni tipoHorario, no hay info suficiente
+  if (!salon.tipoHorario || !salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+
+  const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
+  if (bloques.length === 0) return null
+
   const ahora = new Date()
   const diaSemana = ahora.getDay()
   const minutos = ahora.getHours() * 60 + ahora.getMinutes()
@@ -39,11 +45,6 @@ function estaDisponible(salon) {
 
   const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-
-  if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
-
-  const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
-  if (bloques.length === 0) return null
 
   if (salon.tipoHorario === 'operacion') {
     const abierto = bloques.some(b => {
@@ -202,12 +203,15 @@ export default function RightPanel() {
             border: `1px solid ${
   disponible === true     ? '#bbf7d0' :
   disponible === false    ? '#fecdd3' :
-  disponible === 'cerrado'? '#e2e8f0' : 'var(--color-border)'
+  disponible === 'cerrado'? '#e2e8f0' :
+  disponible === null     ? '#fed7aa' : 'var(--color-border)'
 }`,
           }}
         >
           <TipoIcon size={13} style={{
-            color: disponible === true ? '#16a34a' : disponible === false ? '#dc2626' : '#94a3b8',
+            color: disponible === true  ? '#16a34a' :
+       disponible === false ? '#dc2626' :
+       disponible === null  ? '#f59e0b' : '#94a3b8',
             flexShrink: 0
           }} />
           <div className="flex-1 min-w-0">
@@ -222,7 +226,7 @@ export default function RightPanel() {
           {disponible === true     && <CheckCircle2 size={14} style={{ color: '#16a34a', flexShrink: 0 }} />}
 {disponible === false    && <XCircle      size={14} style={{ color: '#dc2626', flexShrink: 0 }} />}
 {disponible === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />}
-{disponible === null     && <Circle       size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />}
+{disponible === null     && <Circle       size={14} style={{ color: '#f59e0b', flexShrink: 0 }} />}
         </div>
       )
     })
