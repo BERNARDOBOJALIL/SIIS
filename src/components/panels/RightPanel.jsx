@@ -302,18 +302,19 @@ export default function RightPanel() {
       {/* Disponibilidad */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
         style={{ background:
-          salonSel.disp === true     ? '#f0fdf4' :
-          salonSel.disp === false    ? '#fef2f2' :
-          salonSel.disp === 'cerrado'? '#f8fafc' : 'var(--color-bg)'
-        }}>
+  salonSel.disp === true     ? '#f0fdf4' :
+  salonSel.disp === false    ? '#fef2f2' :
+  salonSel.disp === 'cerrado'? '#f8fafc' : '#fff7ed'
+}}>
         {salonSel.disp === true     && <CheckCircle2 size={14} style={{ color: '#16a34a' }} />}
         {salonSel.disp === false    && <XCircle      size={14} style={{ color: '#dc2626' }} />}
         {salonSel.disp === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8' }} />}
-        {salonSel.disp === null     && <Circle       size={14} style={{ color: '#94a3b8' }} />}
+        {salonSel.disp === null     && <Circle       size={14} style={{ color: '#f59e0b' }} />}
         <span className="text-[12px] font-semibold" style={{ color:
-          salonSel.disp === true     ? '#16a34a' :
-          salonSel.disp === false    ? '#dc2626' : '#94a3b8'
-        }}>
+  salonSel.disp === true     ? '#16a34a' :
+  salonSel.disp === false    ? '#dc2626' :
+  salonSel.disp === 'cerrado'? '#94a3b8' : '#f59e0b'
+}}>
           {salonSel.disp === true     ? 'Disponible ahora' :
            salonSel.disp === false    ? 'Ocupado ahora'    :
            salonSel.disp === 'cerrado'? 'Cerrado'          : 'Sin información'}
