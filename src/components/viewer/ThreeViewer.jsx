@@ -8,7 +8,7 @@ import { OrbitControls }  from 'three/examples/jsm/controls/OrbitControls.js'
 import { Timer }          from 'three'
 import {
   Search, X, Layers, Building2, RotateCcw, Info, Navigation2, XCircle,
-  MapPin, Crosshair, ArrowRight, Eye, EyeOff,
+  MapPin, Crosshair, ArrowRight, Eye, EyeOff, Play, Pause, ListOrdered,
 } from 'lucide-react'
 import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
 
@@ -237,6 +237,10 @@ function formatEntryName(name) {
     .replace(/_/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+
+  if (/^easyplot\s*oficinas$/i.test(normalized) || /^easyplotoficinas$/i.test(normalized)) {
+    return 'EasyPlot/Oficinas'
+  }
 
   if (/bañ|bano|banos|bath/i.test(normalized)) {
     return 'Baños'
@@ -1080,8 +1084,13 @@ export default function ThreeViewer() {
   const [navMode,      setNavMode]      = useState(false)   // navigation panel open
   const [navOrigin,    setNavOrigin]     = useState(null)    // display label for origin
   const [navDest,      setNavDest]       = useState(null)    // display label for dest
+  const navOriginLabelRef = useRef(null) // immediate origin label (avoids async state lag)
+  const navDestLabelRef = useRef(null)   // immediate dest label (avoids async state lag)
   const [navActive,    setNavActive]     = useState(false)   // route displayed
+  const [navInstructions, setNavInstructions] = useState([])  // array of instruction objects
+  const [navSpeaking, setNavSpeaking]   = useState(false)    // is audio playing
   const navModeLiveRef = useRef(false)
+  const navSpeechRunIdRef = useRef(0)
   const navLoadStateRef = useRef({ modelIndex: -1, loading: false, promise: null })
 
   const [loadProgress, setLoadProgress] = useState({
@@ -1120,6 +1129,19 @@ export default function ThreeViewer() {
         percent,
       }
     })
+  }
+
+  function setNavOriginValue(value) {
+    navOriginLabelRef.current = value
+    setNavOrigin(value)
+  }
+
+  function setNavDestValue(value) {
+    if (navDestLabelRef.current !== value) {
+      stopInstructionNarration()
+    }
+    navDestLabelRef.current = value
+    setNavDest(value)
   }
 
   /* ── Limpia todas las etiquetas del overlay ── */
@@ -1637,12 +1659,14 @@ export default function ThreeViewer() {
   function exitNavigation() {
     clearRouteVisuals()
     clearNavMarkers()
+    stopInstructionNarration()
     navOriginPt.current = null
     navDestPt.current = null
     setNavMode(false)
-    setNavOrigin(null)
-    setNavDest(null)
+    setNavOriginValue(null)
+    setNavDestValue(null)
     setNavActive(false)
+    setNavInstructions([])
     if (selectedRef.current) deselectEntry(selectedRef.current)
     isolateSelectedEntry(null)
     /* Restore all labels and return camera to default */
@@ -2050,6 +2074,703 @@ export default function ThreeViewer() {
     return simplifyOrthogonalPolyline(out, 0.35, graph)
   }
 
+  function joinNatural(items, limit = 2) {
+    const unique = [...new Set((items || []).filter(Boolean))].slice(0, limit)
+    if (unique.length === 0) return ''
+    if (unique.length === 1) return unique[0]
+    if (unique.length === 2) return `${unique[0]} y ${unique[1]}`
+    return `${unique.slice(0, -1).join(', ')} y ${unique[unique.length - 1]}`
+  }
+
+  function normalizeRoomLabel(name) {
+    const value = String(name ?? '').trim()
+    if (!value) return ''
+    const parts = value.split('/').map(p => p.trim()).filter(Boolean)
+    if (parts.length <= 1) return value
+    return joinNatural(parts, parts.length)
+  }
+
+  function splitNameParts(name) {
+    return String(name ?? '').split('/').map(p => p.trim()).filter(Boolean)
+  }
+
+  function isSalonLabelPart(part) {
+    const token = String(part ?? '').trim().toUpperCase()
+    if (!token) return false
+    if (!token.startsWith('J')) return false
+    if (token === 'J') return true
+    return /[0-9]/.test(token) || /^J[\s\-_.]?[A-Z0-9]+$/.test(token)
+  }
+
+  function salonUnitsFromName(name) {
+    const parts = splitNameParts(name)
+    if (parts.length === 0) return 0
+    return parts.filter(isSalonLabelPart).length
+  }
+
+  function inferEntrySpatialType(entry) {
+    const name = `${entry?.name ?? ''} ${entry?.rawName ?? ''}`.toLowerCase()
+    const corridorRegex = /(pasillo|corredor|hall|vestib|lobby|circulacion|andador|galeria|acceso)/
+    const roomRegex = /(salon|aula|sala|laboratorio|lab|oficina|cubiculo|taller|biblioteca|auditorio|bano|baño|sanitario|recepcion|recepción)/
+
+    if (corridorRegex.test(name)) return 'corridor'
+    if (roomRegex.test(name)) return 'room'
+
+    const bb = getEntryBounds(entry, 'full')
+    if (bb.isEmpty()) return 'room'
+    const size = bb.getSize(new THREE.Vector3())
+    const length = Math.max(size.x, size.z)
+    const width = Math.max(Math.min(size.x, size.z), 0.1)
+    const elongation = length / width
+    const footprint = size.x * size.z
+
+    if ((elongation >= 2.5 && length >= 7) || (elongation >= 2.0 && footprint >= 70 && width <= 8)) {
+      return 'corridor'
+    }
+    return 'room'
+  }
+
+  function getWaypointReferences(point, radius = 14) {
+    const ranked = []
+    meshes.current.forEach(entry => {
+      const center = getEntryWorldCenter(entry, 'focus')
+      const dist = center.distanceTo(point)
+      if (dist <= radius) ranked.push({ entry, center, dist })
+    })
+    ranked.sort((a, b) => a.dist - b.dist)
+
+    const corridors = []
+    const corridorSeen = new Set()
+    const rooms = []
+    const roomSeen = new Set()
+    ranked.slice(0, 10).forEach(({ entry, center, dist }) => {
+      const kind = inferEntrySpatialType(entry)
+      if (kind === 'corridor') {
+        const lower = entry.name.toLowerCase()
+        const corridorName = (/(pasillo|corredor|hall|vestib|lobby)/.test(lower))
+          ? entry.name
+          : `el pasillo junto a ${normalizeRoomLabel(entry.name)}`
+        if (!corridorSeen.has(corridorName)) {
+          corridorSeen.add(corridorName)
+          corridors.push(corridorName)
+        }
+      } else {
+        if (roomSeen.has(entry.key)) return
+        roomSeen.add(entry.key)
+        const salonUnits = salonUnitsFromName(entry.name)
+        rooms.push({
+          key: entry.key,
+          name: entry.name,
+          displayName: normalizeRoomLabel(entry.name),
+          center: center.clone(),
+          dist,
+          isSalon: salonUnits > 0,
+          salonUnits,
+        })
+      }
+    })
+
+    /* Infer corridor context when model names corridor geometry as a room-like area. */
+    if (corridors.length === 0 && rooms.length >= 2) {
+      corridors.push(`el pasillo entre ${rooms[0].displayName} y ${rooms[1].displayName}`)
+    }
+
+    return {
+      corridors,
+      rooms,
+      roomNames: rooms.map(r => r.displayName),
+    }
+  }
+
+  function buildRelativeCue(anchorPoint, forwardVec, refs, options = {}) {
+    const { preferNonSalon = false } = options
+    if (!refs) return ''
+    let candidates = refs.rooms || []
+    if (preferNonSalon) {
+      const nonSalon = candidates.filter(r => !r.isSalon)
+      if (nonSalon.length > 0) candidates = nonSalon
+    }
+
+    if (candidates.length === 0) {
+      if (refs.corridors.length > 0) return refs.corridors[0]
+      return ''
+    }
+
+    const candidate = candidates[0]
+    const fwd2 = new THREE.Vector2(forwardVec.x, forwardVec.z)
+    if (fwd2.lengthSq() < 0.0001) return candidate.displayName
+    fwd2.normalize()
+
+    const toRef = new THREE.Vector2(candidate.center.x - anchorPoint.x, candidate.center.z - anchorPoint.z)
+    if (toRef.lengthSq() < 0.0001) return candidate.displayName
+    toRef.normalize()
+
+    const dot = fwd2.dot(toRef)
+    if (dot > 0.35) return candidate.displayName
+    return candidate.displayName
+  }
+
+  function segmentLength(routePoints, startIndex, endIndex) {
+    if (endIndex <= startIndex) return 0
+    let len = 0
+    for (let i = startIndex + 1; i <= endIndex; i++) {
+      len += routePoints[i].distanceTo(routePoints[i - 1])
+    }
+    return len
+  }
+
+  function findLastSolidPassedOnSegment(routePoints, startIndex, endIndex, options = {}) {
+    if (endIndex <= startIndex) return null
+
+    const {
+      excludeKey = null,
+      excludeLabel = '',
+      trimStart = true,
+      trimEnd = true,
+      avoidNames = [],
+    } = options
+    const avoidNameSet = new Set((avoidNames || [])
+      .map(n => normalizeInstructionText(n))
+      .filter(Boolean))
+    const maxDistToSegment = 4.4
+    const totalLen = segmentLength(routePoints, startIndex, endIndex)
+    if (totalLen < 1) return null
+
+    const avoidStart = trimStart ? Math.min(2.0, totalLen * 0.25) : 0
+    const avoidEnd = trimEnd ? Math.min(1.2, totalLen * 0.2) : 0
+    const candidates = []
+
+    meshes.current.forEach(entry => {
+      if (excludeKey && entry.key === excludeKey) return
+      const entryName = normalizeRoomLabel(entry.name)
+      if (excludeLabel && entryName === excludeLabel) return
+      if (avoidNameSet.has(normalizeInstructionText(entryName))) return
+
+      const center = getEntryWorldCenter(entry, 'focus')
+      let offsetAcc = 0
+      let bestHit = null
+
+      for (let i = startIndex + 1; i <= endIndex; i++) {
+        const a = routePoints[i - 1]
+        const b = routePoints[i]
+        const abx = b.x - a.x
+        const abz = b.z - a.z
+        const abLenSq = abx * abx + abz * abz
+        const segLen = Math.sqrt(abLenSq)
+        if (abLenSq < 0.0001) {
+          offsetAcc += segLen
+          continue
+        }
+
+        let t = ((center.x - a.x) * abx + (center.z - a.z) * abz) / abLenSq
+        t = Math.max(0, Math.min(1, t))
+        const qx = a.x + abx * t
+        const qz = a.z + abz * t
+        const dist = Math.hypot(center.x - qx, center.z - qz)
+
+        if (dist <= maxDistToSegment) {
+          const along = offsetAcc + segLen * t
+          if (along >= avoidStart && along <= (totalLen - avoidEnd)) {
+            if (!bestHit || along > bestHit.along || (Math.abs(along - bestHit.along) < 0.25 && dist < bestHit.dist)) {
+              bestHit = { along, dist }
+            }
+          }
+        }
+
+        offsetAcc += segLen
+      }
+
+      if (!bestHit) return
+
+      candidates.push({
+        entry,
+        kind: inferEntrySpatialType(entry),
+        along: bestHit.along,
+        dist: bestHit.dist,
+      })
+    })
+
+    if (candidates.length === 0) return null
+
+    candidates.sort((a, b) => {
+      if (Math.abs(a.along - b.along) > 0.001) return b.along - a.along
+      return a.dist - b.dist
+    })
+
+    const nonCorridor = candidates.find(c => c.kind !== 'corridor')
+    const chosen = nonCorridor ?? candidates[0]
+    return normalizeRoomLabel(chosen.entry.name)
+  }
+
+  function findReferenceNearPoint(point, options = {}) {
+    const {
+      destKey = null,
+      destLabel = '',
+      preferNonSalon = true,
+      forwardVec = null,
+      preferAhead = false,
+      avoidNames = [],
+    } = options
+    const avoidNameSet = new Set((avoidNames || [])
+      .map(n => normalizeInstructionText(n))
+      .filter(Boolean))
+
+    let fwd2 = null
+    if (forwardVec) {
+      const candidate = new THREE.Vector2(forwardVec.x, forwardVec.z)
+      if (candidate.lengthSq() > 0.0001) {
+        candidate.normalize()
+        fwd2 = candidate
+      }
+    }
+
+    const refs = getWaypointReferences(point, 13)
+    const roomCandidates = (refs.rooms || [])
+      .filter(r => !avoidNameSet.has(normalizeInstructionText(r.displayName)))
+      .map(r => {
+        let aheadScore = 0
+        if (fwd2) {
+          const toRef = new THREE.Vector2(r.center.x - point.x, r.center.z - point.z)
+          if (toRef.lengthSq() > 0.0001) {
+            toRef.normalize()
+            aheadScore = fwd2.dot(toRef)
+          }
+        }
+        return { ...r, aheadScore }
+      })
+
+    roomCandidates.sort((a, b) => {
+      if (preferAhead) {
+        const aAhead = a.aheadScore >= 0.15 ? 1 : 0
+        const bAhead = b.aheadScore >= 0.15 ? 1 : 0
+        if (aAhead !== bAhead) return bAhead - aAhead
+        if (Math.abs(a.aheadScore - b.aheadScore) > 0.05) return b.aheadScore - a.aheadScore
+      }
+
+      if (preferNonSalon) {
+        const aNonSalon = a.isSalon ? 0 : 1
+        const bNonSalon = b.isSalon ? 0 : 1
+        if (aNonSalon !== bNonSalon) return bNonSalon - aNonSalon
+      }
+
+      return a.dist - b.dist
+    })
+
+    if (roomCandidates.length > 0) return roomCandidates[0].displayName
+
+    const corridorCandidates = (refs.corridors || [])
+      .filter(name => !avoidNameSet.has(normalizeInstructionText(name)))
+    if (corridorCandidates.length > 0) return corridorCandidates[0]
+
+    let nearest = null
+    meshes.current.forEach(entry => {
+      if (destKey && entry.key === destKey) return
+      const entryName = normalizeRoomLabel(entry.name)
+      if (destLabel && entryName === destLabel) return
+      if (avoidNameSet.has(normalizeInstructionText(entryName))) return
+      const center = getEntryWorldCenter(entry, 'focus')
+      const dist = center.distanceTo(point)
+      if (!nearest || dist < nearest.dist) nearest = { name: entryName, dist }
+    })
+
+    return nearest?.name ?? null
+  }
+
+  function turnActionText(turnType) {
+    if (turnType === 'izquierda') return 'gira a la izquierda'
+    if (turnType === 'derecha') return 'gira a la derecha'
+    if (turnType === 'retorno') return 'da media vuelta'
+    return 'continua'
+  }
+
+  function buildStraightInstruction(routePoints, startIndex, endIndex, options = {}) {
+    if (endIndex <= startIndex) return null
+
+    const {
+      destKey = null,
+      destLabel = '',
+      isFinalSegment = false,
+      targetName = '',
+      nextAction = '',
+      avoidNames = [],
+      prefix = '',
+    } = options
+
+    let referenceName = ''
+    if (isFinalSegment) referenceName = destLabel
+    else referenceName = targetName
+
+    if (!referenceName) {
+      const stopPoint = routePoints[endIndex]
+      referenceName = findReferenceNearPoint(stopPoint, {
+        destKey,
+        destLabel,
+        preferNonSalon: !isFinalSegment,
+        avoidNames,
+      })
+    }
+    if (!referenceName) return null
+
+    const actionText = nextAction || (isFinalSegment ? 'detente' : 'continua')
+    let line = `${prefix}Continua recto hasta llegar a ${referenceName}`
+    if (isFinalSegment) {
+      const passingName = findLastSolidPassedOnSegment(routePoints, startIndex, endIndex, {
+        excludeKey: destKey,
+        excludeLabel: destLabel,
+        trimStart: true,
+        trimEnd: false,
+      })
+      if (passingName && normalizeInstructionText(passingName) !== normalizeInstructionText(referenceName)) {
+        line += `, pasando ${passingName}`
+      }
+    }
+    line += ` y ${actionText}`
+    line += '.'
+
+    return { text: line, voice: line, reference: referenceName }
+  }
+
+  function headingIndexFromSegment(fromPoint, toPoint) {
+    const dx = toPoint.x - fromPoint.x
+    const dz = toPoint.z - fromPoint.z
+    if ((dx * dx + dz * dz) < 0.0001) return null
+
+    /* Clockwise heading index over dominant axis: 0,1,2,3. */
+    if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? 1 : 3
+    return dz >= 0 ? 0 : 2
+  }
+
+  function turnTypeFromHeadingDelta(delta) {
+    if (delta === 1) return 'izquierda'
+    if (delta === 3) return 'derecha'
+    if (delta === 2) return 'retorno'
+    return 'recto'
+  }
+
+  function normalizeInstructionText(text) {
+    return String(text ?? '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+  }
+
+  function pushUniqueInstruction(list, text, voice = text) {
+    if (!text) return
+    const cleanText = String(text).replace(/\s+/g, ' ').trim()
+    if (!cleanText) return
+    const norm = normalizeInstructionText(cleanText)
+    if (list.length > 0) {
+      const lastNorm = normalizeInstructionText(list[list.length - 1].text)
+      if (lastNorm === norm) return
+    }
+    list.push({ text: cleanText, voice: String(voice ?? cleanText).replace(/\s+/g, ' ').trim() })
+  }
+
+  function pickTurnReferenceName(routePoints, segmentStartIndex, turnIndex, options = {}) {
+    const {
+      destKey = null,
+      destLabel = '',
+      avoidNames = [],
+    } = options
+
+    const segmentStartPoint = routePoints[segmentStartIndex] ?? routePoints[Math.max(0, turnIndex - 1)] ?? routePoints[turnIndex]
+    const point = routePoints[turnIndex]
+    const incomingForward = new THREE.Vector3().subVectors(point, segmentStartPoint)
+
+    const bySegment = findLastSolidPassedOnSegment(routePoints, segmentStartIndex, turnIndex, {
+      excludeKey: destKey,
+      excludeLabel: destLabel,
+      trimStart: true,
+      trimEnd: false,
+      avoidNames,
+    })
+    if (bySegment) return bySegment
+
+    return findReferenceNearPoint(point, {
+      destKey,
+      destLabel,
+      preferNonSalon: true,
+      forwardVec: incomingForward,
+      preferAhead: true,
+      avoidNames,
+    })
+  }
+
+  function collectVisibleTurnSteps(routePoints) {
+    if (!routePoints || routePoints.length < 3) return []
+
+    const minSegLen = 0.18
+    const minTurnLegLen = 0.6
+    const maxZigzagLen = 1.5
+
+    const axisSegments = []
+    for (let i = 1; i < routePoints.length; i++) {
+      const segStart = routePoints[i - 1]
+      const segEnd = routePoints[i]
+      const len = segEnd.distanceTo(segStart)
+      if (len < minSegLen) continue
+
+      const heading = headingIndexFromSegment(segStart, segEnd)
+      if (heading == null) continue
+
+      const last = axisSegments[axisSegments.length - 1]
+      if (last && last.heading === heading) {
+        last.length += len
+        last.endVertexIndex = i
+      } else {
+        axisSegments.push({
+          heading,
+          length: len,
+          startVertexIndex: i - 1,
+          endVertexIndex: i,
+        })
+      }
+    }
+
+    /* Remove short A-B-A jitter from snapped routes so we don't invent turns. */
+    let simplified = true
+    while (simplified) {
+      simplified = false
+      for (let i = 1; i < axisSegments.length - 1; i++) {
+        const prev = axisSegments[i - 1]
+        const mid = axisSegments[i]
+        const next = axisSegments[i + 1]
+        if (prev.heading !== next.heading) continue
+        if (mid.length > maxZigzagLen) continue
+
+        prev.length += mid.length + next.length
+        prev.endVertexIndex = next.endVertexIndex
+        axisSegments.splice(i, 2)
+        simplified = true
+        break
+      }
+    }
+
+    const rawTurns = []
+    for (let i = 1; i < axisSegments.length; i++) {
+      const incoming = axisSegments[i - 1]
+      const outgoing = axisSegments[i]
+      const delta = (outgoing.heading - incoming.heading + 4) % 4
+      const type = turnTypeFromHeadingDelta(delta)
+      if (type === 'recto') continue
+
+      const isFinal = i === axisSegments.length - 1
+      const enoughLeg = incoming.length >= minTurnLegLen && (outgoing.length >= minTurnLegLen || isFinal)
+      if (!enoughLeg) continue
+
+      rawTurns.push({
+        index: incoming.endVertexIndex,
+        type,
+        angle: type === 'retorno' ? 180 : 90,
+      })
+    }
+
+    const turns = []
+    for (const step of rawTurns) {
+      const last = turns[turns.length - 1]
+      if (
+        last
+        && last.type !== 'retorno'
+        && step.type !== 'retorno'
+        && last.type !== step.type
+      ) {
+        const a = routePoints[last.index]
+        const b = routePoints[step.index]
+        if (a && b && a.distanceTo(b) < 1.9) {
+          turns.pop()
+          continue
+        }
+      }
+      turns.push(step)
+    }
+
+    return turns
+  }
+
+  function generateRouteInstructions(routePoints, labels = {}) {
+    if (!routePoints || routePoints.length < 2) return []
+
+    const originRaw = labels.origin ?? navOriginLabelRef.current ?? navOrigin ?? 'tu ubicacion'
+    const destRaw = labels.dest ?? navDestLabelRef.current ?? navDest ?? 'destino'
+    const originLabel = normalizeRoomLabel(originRaw)
+    const destLabel = normalizeRoomLabel(destRaw)
+    const instructions = []
+    const totalPoints = routePoints.length
+
+    const destEntry = meshes.current.find(e =>
+      e.name === destRaw || e.name === destLabel || normalizeRoomLabel(e.name) === destLabel,
+    )
+    const destKey = destEntry?.key ?? null
+
+    /* Use the exact visible normalized polyline that the user sees on screen. */
+    const visibleRoute = routePoints
+    const turnSteps = collectVisibleTurnSteps(visibleRoute)
+    let lastStraightReference = ''
+
+    if (turnSteps.length === 0) {
+      const finalOnly = buildStraightInstruction(
+        visibleRoute,
+        0,
+        totalPoints - 1,
+        {
+          destKey,
+          destLabel,
+          isFinalSegment: true,
+          nextAction: 'detente',
+          prefix: `Sal desde ${originLabel}. `,
+        },
+      )
+      if (finalOnly) pushUniqueInstruction(instructions, finalOnly.text, finalOnly.voice)
+      else pushUniqueInstruction(instructions, `Sal desde ${originLabel}.`)
+      pushUniqueInstruction(instructions, `Llegaste a ${destLabel}.`)
+      return instructions
+    }
+
+    for (let t = 0; t < turnSteps.length; t++) {
+      const currentTurn = turnSteps[t]
+      const segmentStartIndex = t > 0 ? turnSteps[t - 1].index : 0
+      const refName = pickTurnReferenceName(visibleRoute, segmentStartIndex, currentTurn.index, {
+        destKey,
+        destLabel,
+        avoidNames: lastStraightReference ? [lastStraightReference] : [],
+      })
+      const nextAction = turnActionText(currentTurn.type)
+
+      const beforeTurn = buildStraightInstruction(
+        visibleRoute,
+        segmentStartIndex,
+        currentTurn.index,
+        {
+          targetName: refName,
+          nextAction,
+          avoidNames: lastStraightReference ? [lastStraightReference] : [],
+          prefix: t === 0 ? `Sal desde ${originLabel}. ` : '',
+        },
+      )
+      if (beforeTurn) {
+        pushUniqueInstruction(instructions, beforeTurn.text, beforeTurn.voice)
+        const refNorm = normalizeInstructionText(beforeTurn.reference || refName)
+        if (refNorm) lastStraightReference = refNorm
+      }
+      else if (t === 0) pushUniqueInstruction(instructions, `Sal desde ${originLabel}.`)
+    }
+
+    const lastTurnIndex = turnSteps[turnSteps.length - 1].index
+    const finalStraight = buildStraightInstruction(
+      visibleRoute,
+      lastTurnIndex,
+      totalPoints - 1,
+      {
+        destKey,
+        destLabel,
+        isFinalSegment: true,
+        nextAction: 'detente',
+      },
+    )
+    if (finalStraight) pushUniqueInstruction(instructions, finalStraight.text, finalStraight.voice)
+
+    pushUniqueInstruction(instructions, `Llegaste a ${destLabel}.`)
+
+    return instructions
+  }
+
+  function pickBestSpanishVoice() {
+    if (!window.speechSynthesis) return null
+    const voices = window.speechSynthesis.getVoices() || []
+    if (voices.length === 0) return null
+
+    const scoreVoice = (v) => {
+      const lang = String(v.lang || '').toLowerCase()
+      const name = String(v.name || '').toLowerCase()
+      let score = 0
+
+      if (lang.startsWith('es-mx')) score += 55
+      else if (lang.startsWith('es-es')) score += 45
+      else if (lang.startsWith('es')) score += 35
+
+      if (/natural|neural/.test(name)) score += 40
+      if (/microsoft|google|siri|apple/.test(name)) score += 16
+      if (/sabina|helena|paulina|jorge|dalia|sofia|sof[ií]a|alma/.test(name)) score += 14
+      if (/desktop/.test(name)) score -= 5
+
+      return score
+    }
+
+    return [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0] || null
+  }
+
+  function stopInstructionNarration() {
+    navSpeechRunIdRef.current += 1
+    window.speechSynthesis?.cancel()
+    setNavSpeaking(false)
+  }
+
+  function speakInstructions(instructions) {
+    if (!window.speechSynthesis || !instructions || instructions.length === 0) {
+      setNavSpeaking(false)
+      return
+    }
+
+    navSpeechRunIdRef.current += 1
+    const runId = navSpeechRunIdRef.current
+    window.speechSynthesis.cancel()
+    setNavSpeaking(true)
+
+    const voice = pickBestSpanishVoice()
+
+    let index = 0
+    const speakNext = () => {
+      if (runId !== navSpeechRunIdRef.current || index >= instructions.length || !navModeLiveRef.current) {
+        if (runId === navSpeechRunIdRef.current) setNavSpeaking(false)
+        return
+      }
+      const instr = instructions[index]
+      const utterance = new SpeechSynthesisUtterance(instr.voice)
+      utterance.lang = voice?.lang || 'es-MX'
+      utterance.rate = 0.91
+      utterance.pitch = 1.03
+      utterance.volume = 1
+      if (voice) utterance.voice = voice
+
+      utterance.onend = () => {
+        if (runId !== navSpeechRunIdRef.current || !navModeLiveRef.current) {
+          if (runId === navSpeechRunIdRef.current) setNavSpeaking(false)
+          return
+        }
+        index++
+        const pause = 430 + Math.min(320, Math.round(instr.voice.length * 3.5))
+        setTimeout(() => {
+          if (runId !== navSpeechRunIdRef.current) return
+          speakNext()
+        }, pause)
+      }
+      utterance.onerror = () => {
+        if (runId !== navSpeechRunIdRef.current || !navModeLiveRef.current) {
+          if (runId === navSpeechRunIdRef.current) setNavSpeaking(false)
+          return
+        }
+        index++
+        speakNext()
+      }
+
+      if (runId !== navSpeechRunIdRef.current || !navModeLiveRef.current) {
+        if (runId === navSpeechRunIdRef.current) setNavSpeaking(false)
+        return
+      }
+      window.speechSynthesis.speak(utterance)
+    }
+
+    speakNext()
+  }
+
+  function toggleInstructionAudio() {
+    if (navSpeaking) {
+      stopInstructionNarration()
+    } else {
+      speakInstructions(navInstructions)
+    }
+  }
+
   async function buildRoute() {
     const graph = navGraphRef.current ?? await ensureNavGraphLoaded()
     const fromScene = navOriginPt.current
@@ -2265,6 +2986,17 @@ export default function ThreeViewer() {
     if (routeFrame) {
       startCamAnim(routeFrame.pos, routeFrame.target)
     }
+
+    /* Generate and speak instructions */
+    const instructions = generateRouteInstructions(routePoints, {
+      origin: navOriginLabelRef.current,
+      dest: navDestLabelRef.current,
+    })
+    setNavInstructions(instructions)
+    if (instructions.length > 0) {
+      speakInstructions(instructions)
+    }
+
     setNavActive(true)
     invalidateRenderRef.current()
   }
@@ -2273,15 +3005,17 @@ export default function ThreeViewer() {
     if (selectedRef.current) deselectEntry(selectedRef.current)
     isolateSelectedEntry(null)
     navDestPt.current = null
-    setNavDest(null)
+    setNavDestValue(null)
     setNavActive(false)
+    setNavInstructions([])
+    stopInstructionNarration()
     clearRouteVisuals()
     clearNavMarkers()
     /* Fixed origin per floor */
     const o = MODELS[activeModel].origin
     const originPt = new THREE.Vector3(o[0], o[1], o[2])
     navOriginPt.current = originPt
-    setNavOrigin('Entrada')
+    setNavOriginValue('Entrada')
     addNavMarker(originPt, 0x22cc44, 'origin')
     setNavMode(true)
 
@@ -2304,7 +3038,10 @@ export default function ThreeViewer() {
       const pt = center.clone()
 
       navDestPt.current = pt
-      setNavDest(entry.name)
+      setNavDestValue(entry.name)
+      setNavActive(false)
+      setNavInstructions([])
+      stopInstructionNarration()
       clearRouteVisuals()
       while (navMarkersRef.current.length > 1) {
         const old = navMarkersRef.current.pop()
@@ -2409,7 +3146,10 @@ export default function ThreeViewer() {
 
       /* Origin is always fixed (set in enterNavMode), click only sets dest */
       navDestPt.current = pt
-      setNavDest(label)
+      setNavDestValue(label)
+      setNavActive(false)
+      setNavInstructions([])
+      stopInstructionNarration()
       clearRouteVisuals()
       /* Keep only origin marker, remove old dest marker */
       while (navMarkersRef.current.length > 1) {
@@ -3683,8 +4423,10 @@ export default function ThreeViewer() {
                       R.current.scene?.remove(old)
                     }
                     navDestPt.current = null
-                    setNavDest(null)
+                    setNavDestValue(null)
                     setNavActive(false)
+                    setNavInstructions([])
+                    stopInstructionNarration()
                     setLabelsVisible(true)
                   }}
                 >
@@ -3692,6 +4434,33 @@ export default function ThreeViewer() {
                   Cambiar destino
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Instructions panel ── */}
+        {navActive && navInstructions.length > 0 && (
+          <div className="nav-instructions-panel">
+            <div className="nav-instructions-header">
+              <span className="nav-instructions-title">
+                <ListOrdered size={15} />
+                <span>Instrucciones</span>
+              </span>
+              <button
+                className="nav-instructions-audio-btn"
+                onClick={toggleInstructionAudio}
+                title={navSpeaking ? 'Pausar audio' : 'Reproducir audio'}
+              >
+                {navSpeaking ? <Pause size={14} /> : <Play size={14} />}
+              </button>
+            </div>
+            <div className="nav-instructions-list">
+              {navInstructions.map((instr, idx) => (
+                <div key={idx} className="nav-instruction-item">
+                  <span className="nav-instruction-num">{idx + 1}</span>
+                  <span className="nav-instruction-text">{instr.text}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
