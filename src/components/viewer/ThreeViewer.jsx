@@ -11,6 +11,7 @@ import {
   MapPin, Crosshair, ArrowRight, Eye, EyeOff, Play, Pause, ListOrdered,
 } from 'lucide-react'
 import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
+import { getSalones } from '../../services/firestoreService'
 
 const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
@@ -226,9 +227,17 @@ function createLoadingPlaceholderModel() {
   return group
 }
 
-function meshStatus(name) {
-  const h = [...name].reduce((a, c) => a + c.charCodeAt(0), 0)
-  return STATUS_WEIGHTED[h % STATUS_WEIGHTED.length]
+function getMeshStatusFromFirebase(name, salonesMap) {
+  // El nombre puede ser "J-001 / J-001-A" o "J-001"
+  const partes = name.split('/').map(p => p.trim())
+  const estados = partes.map(parte => {
+    const salon = salonesMap.get(parte)
+    if (!salon) return null
+    return calcularDisponibilidad(salon)
+  }).filter(Boolean)
+
+  if (estados.length === 0) return 'sin_info'
+  return estadoMasRestrictivo(estados)
 }
 
 function formatEntryName(name) {
@@ -1014,6 +1023,70 @@ function fitEntryCameraUsingAnchor(entry, camera, anchorWorld, padMult = 1.02) {
   }
 }
 
+function normalizarDia(dia) {
+  return dia?.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim() ?? ''
+}
+
+function calcularDisponibilidad(salon) {
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+
+  const edificioCerrado =
+    diaSemana === 0 ||
+    (diaSemana === 6 && minutos >= 14 * 60)
+
+  if (edificioCerrado) return 'cerrado'
+
+  const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
+  if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+
+  const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
+  if (bloques.length === 0) return null
+
+  if (salon.tipoHorario === 'operacion') {
+    const abierto = bloques.some(b => {
+      if (normalizarDia(b.dia) !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return abierto ? 'disponible' : 'cerrado'
+  }
+
+  if (salon.tipoHorario === 'clases') {
+    const ocupado = bloques.some(b => {
+      if (normalizarDia(b.dia) !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return ocupado ? 'ocupado' : 'disponible'
+  }
+
+  return null
+}
+
+const STATUS_COLORS_REAL = {
+  disponible: '#22c55e',
+  ocupado:    '#ef4444',
+  cerrado:    '#94a3b8',
+  sin_info:   '#f59e0b',
+}
+
+// Para conjuntos: el estado más restrictivo gana
+function estadoMasRestrictivo(estados) {
+  if (estados.includes('ocupado'))    return 'ocupado'
+  if (estados.includes('cerrado'))    return 'cerrado'
+  if (estados.includes('disponible')) return 'disponible'
+  return 'sin_info'
+}
+
 export default function ThreeViewer() {
   const mountRef = useRef(null)
   const dracoLoaderRef = useRef(null)
@@ -1060,6 +1133,7 @@ export default function ThreeViewer() {
   const expandedLabelGroupRef = useRef(null)
   const tooltipRef = useRef({ visible:false, name:'', x:0, y:0 })
   const lastPointerMoveRef = useRef(0)
+  const salonesMapRef = useRef(new Map())
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -1070,6 +1144,37 @@ export default function ThreeViewer() {
   const [selectedStatus, setSelectedStatus] = useState(null)
   const [labelsEnabled, setLabelsEnabled] = useState(true)
   const [assetError, setAssetError] = useState('')
+  const [salonesMap, setSalonesMap] = useState(new Map()) // nomenclatura -> salon
+
+  useEffect(() => {
+  getSalones().then(data => {
+    const map = new Map()
+    data.forEach(s => {
+      if (s.nomenclatura) map.set(s.nomenclatura, s)
+    })
+    salonesMapRef.current = map  // actualiza el ref
+    setSalonesMap(map)           // mantiene el estado para el useEffect de repintado
+  })
+}, [])
+
+  useEffect(() => {
+  if (salonesMap.size === 0 || meshes.current.length === 0) return
+  meshes.current.forEach(entry => {
+    const status = getMeshStatusFromFirebase(entry.name, salonesMapRef.current)
+    const sColor = STATUS_COLORS_REAL[status] ?? '#f59e0b'
+    const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.45)
+    entry.statusColor = tinted.clone() // guardamos aparte
+    if (entry !== selectedRef.current && entry !== hoverRef.current) {
+      setEntryColor(entry, tinted)
+    }
+    const lbl = labelsByKeyRef.current.get(entry.key)
+    if (lbl) {
+      lbl.el.style.setProperty('--label-accent', sColor)
+      lbl.lineEl.setAttribute('stroke', sColor)
+    }
+  })
+  invalidateRenderRef.current()
+}, [salonesMap])
 
   /* ── Navigation state ── */
   const navGraphRef  = useRef(null)      // built nav graph
@@ -1376,7 +1481,7 @@ export default function ThreeViewer() {
   function deselectEntry(entry) {
     clearTimeout(entry._liftTimer)
     entry._liftTimer = null
-    setEntryColor(entry, entry.origColor)
+    setEntryColor(entry, entry.statusColor ?? entry.origColor)
     startMeshAnim(entry, entry.origPos, ANIM_LIFT, easeInOutQuart)
     selectedRef.current = null
     setSelectedName(null)
@@ -3082,7 +3187,7 @@ export default function ThreeViewer() {
     setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
-    setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
+    setSelectedStatus(getMeshStatusFromFirebase(entry.name, salonesMap))
     showLabelsForSelection(entry)
     isolateSelectedEntry(entry)
     const anchorPoint = getEntrySelectionAnchorWorld(entry)
@@ -3111,7 +3216,7 @@ export default function ThreeViewer() {
       : null
     if (hitEntry !== prev) {
       if (prev && prev !== selectedRef.current) {
-        setEntryColor(prev, prev.origColor)
+        setEntryColor(prev, prev.statusColor ?? prev.origColor)
         startMeshAnim(prev, prev.origPos)
       }
       if (hitEntry && hitEntry !== selectedRef.current) {
@@ -3196,7 +3301,7 @@ export default function ThreeViewer() {
     setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
-    setSelectedStatus(meshStatus(entry.rawName ?? entry.name))
+    setSelectedStatus(getMeshStatusFromFirebase(entry.name, salonesMap))
     showLabelsForSelection(entry)
     isolateSelectedEntry(entry)
 
@@ -3962,8 +4067,8 @@ export default function ThreeViewer() {
           const rad = Math.max(sz.x, sz.y, sz.z) / 2
           if (rad < minRadius) return
 
-          const status = meshStatus(entry.rawName ?? entry.name)
-          const sColor = STATUS_COLORS[status]
+          const status = getMeshStatusFromFirebase(entry.name, salonesMapRef.current)
+          const sColor = STATUS_COLORS_REAL[status] ?? '#f59e0b'
 
           /* Tinte del material con el color de estado */
           const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.45)
@@ -4042,6 +4147,21 @@ export default function ThreeViewer() {
         loadingLiveRef.current = false
         setTransitioning(false)
         setLabelsVisible(true)
+        // Repintar con colores de Firebase si ya tenemos los datos
+if (salonesMapRef.size > 0) {
+  meshes.current.forEach(entry => {
+    const status = getMeshStatusFromFirebase(entry.name, salonesMapRef.current)
+    const sColor = STATUS_COLORS_REAL[status] ?? '#f59e0b'
+    const tinted = entry.origColor.clone().lerp(new THREE.Color(sColor), 0.45)
+    entry.statusColor = tinted.clone()
+    setEntryColor(entry, tinted)
+    const lbl = labelsByKeyRef.current.get(entry.key)
+    if (lbl) {
+      lbl.el.style.setProperty('--label-accent', sColor)
+      lbl.lineEl.setAttribute('stroke', sColor)
+    }
+  })
+}
         updateLoadProgress({ phase: 'Modelo listo', loaded: 1, total: 1 })
         invalidateRenderRef.current()
       },
@@ -4140,7 +4260,7 @@ export default function ThreeViewer() {
       if (hit)
         setEntryColor(e, C_FOUND)
       else
-        setEntryColor(e, e.origColor)
+        setEntryColor(e, e.statusColor ?? e.origColor)
     })
     invalidateRenderRef.current()
   }, [search])
@@ -4356,7 +4476,7 @@ export default function ThreeViewer() {
         {/* ── Badge pieza seleccionada ── */}
         {selectedName && !navMode && (
           <div className="selected-badge-wrap">
-            <div className="selected-badge" style={{ '--badge-accent': STATUS_COLORS[selectedStatus] || '#94a3b8' }}>
+            <div className="selected-badge" style={{ '--badge-accent': STATUS_COLORS_REAL[selectedStatus] || '#94a3b8' }}>
               <span className="selected-badge-dot" />
               <span className="selected-badge-name">{selectedName}</span>
               <span className="selected-badge-status">{selectedStatus?.replace('_', ' ') ?? ''}</span>

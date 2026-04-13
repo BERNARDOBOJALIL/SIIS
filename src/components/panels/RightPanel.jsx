@@ -6,15 +6,11 @@ import {
 } from 'lucide-react'
 import HorarioGrid from '../common/HorarioGrid'
 
-// Ya no va el array hardcodeado
-
 const LEYENDA = [
-  { color: '#22c55e', label: 'Disponible',     Icon: CheckCircle2 },
-  { color: '#ef4444', label: 'Ocupado',         Icon: XCircle      },
-  { color: '#3b82f6', label: 'Administrativo',  Icon: Settings     },
-  { color: '#f59e0b', label: 'Mantenimiento',   Icon: Settings     },
-  { color: '#8b5cf6', label: 'Evento',          Icon: Users        },
-  { color: '#94a3b8', label: 'Sin asignar',     Icon: Circle       },
+  { color: '#22c55e', label: 'Disponible',  Icon: CheckCircle2 },
+  { color: '#ef4444', label: 'Ocupado',     Icon: XCircle      },
+  { color: '#94a3b8', label: 'Cerrado',     Icon: XCircle      },
+  { color: '#f59e0b', label: 'Sin info',    Icon: Circle       },
 ]
 
 const TIPO_ICON = {
