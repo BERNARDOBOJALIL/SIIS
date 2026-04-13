@@ -3534,12 +3534,11 @@ export default function ThreeViewer() {
 
         <div className="ml-auto shrink-0">
           {!selectedName && (
-            <div className="flex items-center gap-1.5 text-[12px]"
-              style={{ color:'var(--color-text-muted)' }}>
-              <Building2 size={13} />
-              <span className="btn-label">{MODELS[activeModel].label}</span>
-              <span className="btn-short">{MODELS[activeModel].short}</span>
-            </div>
+            <img
+      src="logo_idit.png"
+      alt="Logo"
+      style={{ height: '28px', width: 'auto', objectFit: 'contain' }}
+    />
           )}
         </div>
       </div>
