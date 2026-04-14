@@ -1,12 +1,28 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import ThreeViewer from '../components/viewer/ThreeViewer'
+import { useChatContext } from '../components/layout/MainLayout'
 
 // OPT: split route UI bundle from the 3D viewer bundle.
 const RightPanel = lazy(() => import('../components/panels/RightPanel'))
 
 export default function HomePage() {
+  const { setChatOpen } = useChatContext()
   const [mountRightPanel, setMountRightPanel] = useState(false)
   const [pisoActivo, setPisoActivo] = useState('PB')
+  const [routeVisible, setRouteVisible] = useState(false)
+  const [openSalonDetailsRequest, setOpenSalonDetailsRequest] = useState(null)
+
+  const handleRouteVisibilityChange = useCallback((visible) => {
+    setRouteVisible(Boolean(visible))
+  }, [])
+
+  const handleOpenSalonDetails = useCallback((payload) => {
+    if (!payload?.name) return
+    setOpenSalonDetailsRequest({
+      ...payload,
+      stamp: Date.now(),
+    })
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -35,6 +51,10 @@ export default function HomePage() {
     }
   }, [])
 
+  useEffect(() => {
+    setChatOpen(!routeVisible)
+  }, [routeVisible, setChatOpen])
+
   return (
     /*
      * Layout de dos columnas a altura completa.
@@ -50,13 +70,23 @@ export default function HomePage() {
         className="home-viewer flex-1 min-w-0 flex flex-col overflow-hidden"
         style={{ borderRight: '1px solid var(--color-border)' }}
       >
-        <ThreeViewer onPisoChange={setPisoActivo} />
+        <ThreeViewer
+          onPisoChange={setPisoActivo}
+          onRouteVisibilityChange={handleRouteVisibilityChange}
+          onOpenSalonDetails={handleOpenSalonDetails}
+        />
       </section>
 
       {/* ── Columna derecha: Panel de información ── */}
       <section
-        className="home-panel shrink-0 overflow-hidden"
-        style={{ width: 'clamp(260px, 28%, 340px)' }}
+        className={`home-panel shrink-0 overflow-hidden${routeVisible ? ' home-panel--collapsed' : ''}`}
+        style={{
+          width: routeVisible ? 0 : 'clamp(260px, 28%, 340px)',
+          minWidth: routeVisible ? 0 : 'clamp(260px, 28%, 340px)',
+          opacity: routeVisible ? 0 : 1,
+          pointerEvents: routeVisible ? 'none' : 'auto',
+          transition: 'width 300ms ease, min-width 300ms ease, opacity 220ms ease',
+        }}
       >
         {mountRightPanel ? (
           <Suspense
@@ -67,7 +97,7 @@ export default function HomePage() {
               </div>
             )}
           >
-            <RightPanel piso={pisoActivo} />
+            <RightPanel piso={pisoActivo} openSalonDetailsRequest={openSalonDetailsRequest} />
           </Suspense>
         ) : (
           <div className="h-full flex items-center justify-center text-[12px]"

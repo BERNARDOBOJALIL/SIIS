@@ -62,6 +62,8 @@ const LABEL_OVERLAP_MIN_DIST = 34
 const LABEL_OVERLAP_ITER_LOAD = 24
 const LABEL_OVERLAP_ITER_DYNAMIC = 10
 const LABEL_MOVE_LERP = 0.52
+const CLICK_BLOCK_AFTER_DRAG_MS = 180
+const POINTER_DRAG_THRESHOLD_PX = 6
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -238,6 +240,71 @@ function getMeshStatusFromFirebase(name, salonesMap) {
 
   if (estados.length === 0) return 'sin_info'
   return estadoMasRestrictivo(estados)
+}
+
+function normalizeLookupToken(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function findSalonesForEntryName(entryName, salonesMap) {
+  if (!entryName || !salonesMap || salonesMap.size === 0) return []
+
+  const tokens = String(entryName)
+    .split('/')
+    .map(t => t.trim())
+    .filter(Boolean)
+  const tokenNorms = [...new Set(tokens.map(normalizeLookupToken).filter(Boolean))]
+  if (tokenNorms.length === 0) return []
+
+  const matches = []
+  const seen = new Set()
+
+  tokenNorms.forEach(token => {
+    salonesMap.forEach((salon, nomenclatura) => {
+      const nomNorm = normalizeLookupToken(nomenclatura)
+      if (!nomNorm || nomNorm !== token) return
+      const uniq = normalizeLookupToken(salon?.nomenclatura ?? nomenclatura)
+      if (seen.has(uniq)) return
+      seen.add(uniq)
+      matches.push(salon)
+    })
+  })
+
+  if (matches.length > 0) return matches
+
+  salonesMap.forEach((salon, nomenclatura) => {
+    const nomNorm = normalizeLookupToken(nomenclatura)
+    const nameNorm = normalizeLookupToken(salon?.nombre)
+    const hit = tokenNorms.some(token => (
+      (nomNorm && (nomNorm.includes(token) || token.includes(nomNorm)))
+      || (nameNorm && (nameNorm.includes(token) || token.includes(nameNorm)))
+    ))
+    if (!hit) return
+    const uniq = normalizeLookupToken(salon?.nomenclatura ?? nomenclatura)
+    if (seen.has(uniq)) return
+    seen.add(uniq)
+    matches.push(salon)
+  })
+
+  return matches
+}
+
+function getEntryFullDisplayName(entryName, salonesMap) {
+  const matches = findSalonesForEntryName(entryName, salonesMap)
+  if (matches.length === 0) return entryName
+
+  const names = [...new Set(matches
+    .map(s => String(s?.nombre ?? s?.nomenclatura ?? '').trim())
+    .filter(Boolean))]
+
+  if (names.length === 0) return entryName
+  if (names.length === 1) return names[0]
+  return names.join(' / ')
 }
 
 function formatEntryName(name) {
@@ -1087,7 +1154,7 @@ function estadoMasRestrictivo(estados) {
   return 'sin_info'
 }
 
-export default function ThreeViewer({ onPisoChange }) {
+export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onOpenSalonDetails }) {
   const mountRef = useRef(null)
   const dracoLoaderRef = useRef(null)
   const ktx2LoaderRef = useRef(null)
@@ -1133,6 +1200,11 @@ export default function ThreeViewer({ onPisoChange }) {
   const expandedLabelGroupRef = useRef(null)
   const tooltipRef = useRef({ visible:false, name:'', x:0, y:0 })
   const lastPointerMoveRef = useRef(0)
+  const isOrbitInteractingRef = useRef(false)
+  const orbitMovedRef = useRef(false)
+  const pointerDownRef = useRef(null)
+  const pointerDraggedRef = useRef(false)
+  const suppressSelectionUntilRef = useRef(0)
   const salonesMapRef = useRef(new Map())
 
   const [activeModel,   setActiveModel]   = useState(0)
@@ -1141,6 +1213,7 @@ export default function ThreeViewer({ onPisoChange }) {
   const [tooltip,       setTooltip]       = useState({ visible:false, name:'', x:0, y:0 })
   const [search,        setSearch]        = useState('')
   const [selectedName,  setSelectedName]  = useState(null)
+  const [selectedFullName, setSelectedFullName] = useState('')
   const [selectedStatus, setSelectedStatus] = useState(null)
   const [labelsEnabled, setLabelsEnabled] = useState(true)
   const [assetError, setAssetError] = useState('')
@@ -1173,6 +1246,9 @@ export default function ThreeViewer({ onPisoChange }) {
       lbl.lineEl.setAttribute('stroke', sColor)
     }
   })
+  if (selectedRef.current) {
+    setSelectedFullName(getEntryFullDisplayName(selectedRef.current.name, salonesMapRef.current))
+  }
   invalidateRenderRef.current()
 }, [salonesMap])
 
@@ -1485,6 +1561,7 @@ export default function ThreeViewer({ onPisoChange }) {
     startMeshAnim(entry, entry.origPos, ANIM_LIFT, easeInOutQuart)
     selectedRef.current = null
     setSelectedName(null)
+    setSelectedFullName('')
     setSelectedStatus(null)
     isolateSelectedEntry(null)
     setLabelsVisible(true)
@@ -1526,6 +1603,16 @@ export default function ThreeViewer({ onPisoChange }) {
   setActiveModel(idx)
   onPisoChange?.(MODELS[idx].short) // 'PB' o 'PA'
 }
+
+  function requestOpenScheduleForSelected() {
+    const entry = selectedRef.current
+    if (!entry) return
+    onOpenSalonDetails?.({
+      key: entry.key,
+      name: entry.name,
+      rawName: entry.rawName ?? entry.name,
+    })
+  }
 
   /* ── Navigation helpers ── */
   function clearRouteVisuals() {
@@ -3135,6 +3222,8 @@ export default function ThreeViewer({ onPisoChange }) {
   handlersRef.current.onLabelClick = function(entryKey) {
     const { camera, defaultPos, defaultTarget } = R.current
     if (!camera || meshes.current.length === 0) return
+    const now = performance.now()
+    if (isOrbitInteractingRef.current || now < suppressSelectionUntilRef.current) return
     const entry = meshes.current.find(m => m.key === entryKey)
     if (!entry) return
 
@@ -3188,6 +3277,7 @@ export default function ThreeViewer({ onPisoChange }) {
     setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
+    setSelectedFullName(getEntryFullDisplayName(entry.name, salonesMapRef.current))
     setSelectedStatus(getMeshStatusFromFirebase(entry.name, salonesMap))
     showLabelsForSelection(entry)
     isolateSelectedEntry(entry)
@@ -3234,8 +3324,10 @@ export default function ThreeViewer({ onPisoChange }) {
   }
 
   handlersRef.current.onClick = function(e) {
-    const { camera, renderer, defaultPos, defaultTarget } = R.current
+    const { camera, renderer, controls, defaultPos, defaultTarget } = R.current
     if (!camera || !renderer || meshes.current.length === 0) return
+    const now = performance.now()
+    if (isOrbitInteractingRef.current || now < suppressSelectionUntilRef.current) return
     const { nx, ny } = toNDC(e, renderer.domElement)
     const rayTargets = getActiveRayTargets(navMode)
     const hits = doRaycast(nx, ny, camera, rayTargets)
@@ -3281,12 +3373,19 @@ export default function ThreeViewer({ onPisoChange }) {
     if (hits.length === 0) {
       /*
        * Click en vacío: si hay pieza seleccionada la deselecciona y regresa.
-       * Si no hay pieza seleccionada → cámara libre, NO regresa sola.
-       * El timer de inactividad (30s) se encarga de regresar.
+       * Si no hay pieza seleccionada y la cámara no está en la vista general,
+       * también regresa con animación para mantener UX de "tap para volver al mapa".
        */
       if (prev) {
         deselectEntry(prev)
         startCamAnim(defaultPos, defaultTarget)
+      } else {
+        const cameraMoved =
+          camera.position.distanceToSquared(defaultPos) > 0.05
+          || controls.target.distanceToSquared(defaultTarget) > 0.05
+        if (cameraMoved) {
+          startCamAnim(defaultPos, defaultTarget)
+        }
       }
       resetIdleTimer()
       return
@@ -3302,6 +3401,7 @@ export default function ThreeViewer({ onPisoChange }) {
     setEntryColor(entry, C_SELECTED)
     selectedRef.current = entry
     setSelectedName(entry.name)
+    setSelectedFullName(getEntryFullDisplayName(entry.name, salonesMapRef.current))
     setSelectedStatus(getMeshStatusFromFirebase(entry.name, salonesMap))
     showLabelsForSelection(entry)
     isolateSelectedEntry(entry)
@@ -3814,22 +3914,65 @@ export default function ThreeViewer({ onPisoChange }) {
 
     const onControlStart = () => {
       runtime.interacting = true
+      isOrbitInteractingRef.current = true
+      orbitMovedRef.current = false
       scheduleRender()
     }
     const onControlEnd = () => {
       runtime.interacting = false
+      isOrbitInteractingRef.current = false
+      if (orbitMovedRef.current) {
+        suppressSelectionUntilRef.current = Math.max(
+          suppressSelectionUntilRef.current,
+          performance.now() + CLICK_BLOCK_AFTER_DRAG_MS
+        )
+      }
       scheduleRender()
     }
     const onControlChange = () => {
+      if (runtime.interacting) orbitMovedRef.current = true
       scheduleRender()
     }
     controls.addEventListener('start', onControlStart)
     controls.addEventListener('end', onControlEnd)
     controls.addEventListener('change', onControlChange)
 
-    const pmWrapper = (e) => handlersRef.current.onPointerMove?.(e)
+    const pdWrapper = (e) => {
+      pointerDownRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        pointerId: e.pointerId ?? 0,
+      }
+      pointerDraggedRef.current = false
+    }
+    const pmWrapper = (e) => {
+      const down = pointerDownRef.current
+      if (down && (e.pointerId ?? 0) === down.pointerId && !pointerDraggedRef.current) {
+        const dx = e.clientX - down.x
+        const dy = e.clientY - down.y
+        const distSq = (dx * dx) + (dy * dy)
+        const dragThresholdSq = POINTER_DRAG_THRESHOLD_PX * POINTER_DRAG_THRESHOLD_PX
+        if (distSq >= dragThresholdSq) pointerDraggedRef.current = true
+      }
+      handlersRef.current.onPointerMove?.(e)
+    }
+    const puWrapper = (e) => {
+      const down = pointerDownRef.current
+      if (!down || (e.pointerId ?? 0) !== down.pointerId) return
+      if (pointerDraggedRef.current) {
+        suppressSelectionUntilRef.current = Math.max(
+          suppressSelectionUntilRef.current,
+          performance.now() + CLICK_BLOCK_AFTER_DRAG_MS
+        )
+      }
+      pointerDownRef.current = null
+      pointerDraggedRef.current = false
+    }
     const clWrapper = (e) => handlersRef.current.onClick?.(e)
+    renderer.domElement.addEventListener('pointerdown', pdWrapper, { passive: true })
     renderer.domElement.addEventListener('pointermove', pmWrapper, { passive: true })
+    renderer.domElement.addEventListener('pointerup', puWrapper, { passive: true })
+    renderer.domElement.addEventListener('pointercancel', puWrapper, { passive: true })
     renderer.domElement.addEventListener('click', clWrapper)
 
     return () => {
@@ -3840,7 +3983,10 @@ export default function ThreeViewer({ onPisoChange }) {
       controls.removeEventListener('start', onControlStart)
       controls.removeEventListener('end', onControlEnd)
       controls.removeEventListener('change', onControlChange)
+      renderer.domElement.removeEventListener('pointerdown', pdWrapper)
       renderer.domElement.removeEventListener('pointermove', pmWrapper)
+      renderer.domElement.removeEventListener('pointerup', puWrapper)
+      renderer.domElement.removeEventListener('pointercancel', puWrapper)
       renderer.domElement.removeEventListener('click', clWrapper)
       controls.dispose()
       renderer.dispose()
@@ -4250,6 +4396,10 @@ if (salonesMapRef.size > 0) {
   }, [navMode])
 
   useEffect(() => {
+    onRouteVisibilityChange?.(navActive)
+  }, [navActive, onRouteVisibilityChange])
+
+  useEffect(() => {
     if (meshes.current.length === 0) return
     const q = search.trim().toLowerCase()
     meshes.current.forEach(e => {
@@ -4479,8 +4629,23 @@ if (salonesMapRef.size > 0) {
           <div className="selected-badge-wrap">
             <div className="selected-badge" style={{ '--badge-accent': STATUS_COLORS_REAL[selectedStatus] || '#94a3b8' }}>
               <span className="selected-badge-dot" />
-              <span className="selected-badge-name">{selectedName}</span>
-              <span className="selected-badge-status">{selectedStatus?.replace('_', ' ') ?? ''}</span>
+              <div className="selected-badge-main">
+                <span className="selected-badge-name">{selectedName}</span>
+                <span className="selected-badge-fullname">{selectedFullName || selectedName}</span>
+              </div>
+              <div className="selected-badge-side">
+                <span className="selected-badge-status">{selectedStatus?.replace('_', ' ') ?? ''}</span>
+                <button
+                  type="button"
+                  className="selected-badge-action"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    requestOpenScheduleForSelected()
+                  }}
+                >
+                  Ver horario
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -4497,6 +4662,11 @@ if (salonesMapRef.size > 0) {
             </div>
 
             <div className="nav-panel-body">
+              <div className="nav-entry-banner">
+                <span className="nav-entry-badge">Inicio de ruta</span>
+                <span className="nav-entry-value">Entrada</span>
+              </div>
+
               {/* Origin row */}
               <div className="nav-row">
                 <span className="nav-row-icon nav-row-icon--origin">

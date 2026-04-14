@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { getSalones } from '../../services/firestoreService'
 import {
   School, CheckCircle2, XCircle, Clock3, CalendarDays,
@@ -24,6 +24,56 @@ function normalizarDia(dia) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim() ?? ''
+}
+
+function normalizeRefText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function splitReferenceTokens(value) {
+  return String(value ?? '')
+    .split('/')
+    .map(t => t.trim())
+    .filter(Boolean)
+}
+
+function scoreSalonMatch(salon, tokens) {
+  if (!salon || tokens.length === 0) return 0
+
+  const nom = normalizeRefText(salon.nomenclatura)
+  const name = normalizeRefText(salon.nombre)
+  let score = 0
+
+  tokens.forEach(token => {
+    if (!token) return
+    if (nom && nom === token) score += 10
+    else if (name && name === token) score += 8
+    else if (nom && (nom.includes(token) || token.includes(nom))) score += 6
+    else if (name && (name.includes(token) || token.includes(name))) score += 4
+  })
+
+  return score
+}
+
+function findBestSalonByReference(reference, salones) {
+  const tokens = splitReferenceTokens(reference)
+    .map(normalizeRefText)
+    .filter(Boolean)
+  if (tokens.length === 0 || !Array.isArray(salones) || salones.length === 0) return null
+
+  let best = null
+  salones.forEach(salon => {
+    const score = scoreSalonMatch(salon, tokens)
+    if (score <= 0) return
+    if (!best || score > best.score) best = { salon, score }
+  })
+
+  return best?.salon ?? null
 }
 
 function estaDisponible(salon) {
@@ -79,11 +129,12 @@ function useDateTime() {
   return now
 }
 
-export default function RightPanel({ piso }) {
+export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
   const now    = useDateTime()
   const [salones,  setSalones]  = useState([])
   const [loading,  setLoading]  = useState(true)
   const [salonSel, setSalonSel] = useState(null)
+  const lastHandledOpenRequestRef = useRef(0)
 
   useEffect(() => {
     getSalones().then(data => {
@@ -98,10 +149,24 @@ export default function RightPanel({ piso }) {
   const day = DAYS[now.getDay()]
   const date = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
 
-  const salonesConDisp = salones
-  .filter(s => !piso || s.piso === piso)
-  .map(s => ({ ...s, disp: estaDisponible(s) }))
+  const salonesConDisp = useMemo(() => (
+    salones
+      .filter(s => !piso || s.piso === piso)
+      .map(s => ({ ...s, disp: estaDisponible(s) }))
+  ), [salones, piso, now])
   const libres = salonesConDisp.filter(s => s.disp === true).length
+
+  useEffect(() => {
+    if (!openSalonDetailsRequest?.name || salonesConDisp.length === 0) return
+    const requestStamp = Number(openSalonDetailsRequest?.stamp ?? 0)
+    if (requestStamp && requestStamp === lastHandledOpenRequestRef.current) return
+
+    const match = findBestSalonByReference(openSalonDetailsRequest.name, salonesConDisp)
+    if (match) {
+      setSalonSel(match)
+      if (requestStamp) lastHandledOpenRequestRef.current = requestStamp
+    }
+  }, [openSalonDetailsRequest, salonesConDisp])
 
   return (
     <aside

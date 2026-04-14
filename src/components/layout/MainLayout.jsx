@@ -11,7 +11,7 @@ const ChatContext = createContext()
 export const useChatContext = () => useContext(ChatContext)
 
 export default function MainLayout() {
-  const [chatOpen, setChatOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(true)
   const { messages, loading: chatLoading, sendMessage, resetChat } = useChat()
 
   return (
