@@ -79,7 +79,7 @@ function useDateTime() {
   return now
 }
 
-export default function RightPanel() {
+export default function RightPanel({ piso }) {
   const now    = useDateTime()
   const [salones,  setSalones]  = useState([])
   const [loading,  setLoading]  = useState(true)
@@ -98,7 +98,9 @@ export default function RightPanel() {
   const day = DAYS[now.getDay()]
   const date = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
 
-  const salonesConDisp = salones.map(s => ({ ...s, disp: estaDisponible(s) }))
+  const salonesConDisp = salones
+  .filter(s => !piso || s.piso === piso)
+  .map(s => ({ ...s, disp: estaDisponible(s) }))
   const libres = salonesConDisp.filter(s => s.disp === true).length
 
   return (

@@ -6,6 +6,7 @@ const RightPanel = lazy(() => import('../components/panels/RightPanel'))
 
 export default function HomePage() {
   const [mountRightPanel, setMountRightPanel] = useState(false)
+  const [pisoActivo, setPisoActivo] = useState('PB')
 
   useEffect(() => {
     let cancelled = false
@@ -49,7 +50,7 @@ export default function HomePage() {
         className="home-viewer flex-1 min-w-0 flex flex-col overflow-hidden"
         style={{ borderRight: '1px solid var(--color-border)' }}
       >
-        <ThreeViewer />
+        <ThreeViewer onPisoChange={setPisoActivo} />
       </section>
 
       {/* ── Columna derecha: Panel de información ── */}
@@ -66,7 +67,7 @@ export default function HomePage() {
               </div>
             )}
           >
-            <RightPanel />
+            <RightPanel piso={pisoActivo} />
           </Suspense>
         ) : (
           <div className="h-full flex items-center justify-center text-[12px]"

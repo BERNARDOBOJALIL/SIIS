@@ -1087,7 +1087,7 @@ function estadoMasRestrictivo(estados) {
   return 'sin_info'
 }
 
-export default function ThreeViewer() {
+export default function ThreeViewer({ onPisoChange }) {
   const mountRef = useRef(null)
   const dracoLoaderRef = useRef(null)
   const ktx2LoaderRef = useRef(null)
@@ -1519,12 +1519,13 @@ export default function ThreeViewer() {
   }
 
   function switchModel(idx) {
-    if (idx === activeModel || transitioning) return
-    setSearch('')
-    setAssetError('')
-    exitNavigation()
-    setActiveModel(idx)
-  }
+  if (idx === activeModel || transitioning) return
+  setSearch('')
+  setAssetError('')
+  exitNavigation()
+  setActiveModel(idx)
+  onPisoChange?.(MODELS[idx].short) // 'PB' o 'PA'
+}
 
   /* ── Navigation helpers ── */
   function clearRouteVisuals() {
