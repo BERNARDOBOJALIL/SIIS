@@ -1672,23 +1672,23 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
       beam.position.y = 3
       beam.renderOrder = 1001
       group.add(beam)
-      /* Label "TÚ" sprite */
+      /* Label for route start (visual only; origin coordinates remain unchanged). */
       const canvas = document.createElement('canvas')
-      canvas.width = 128; canvas.height = 64
+      canvas.width = 256; canvas.height = 72
       const ctx = canvas.getContext('2d')
       ctx.fillStyle = '#22cc44'
-      ctx.roundRect(0, 0, 128, 64, 12)
+      ctx.roundRect(0, 0, 256, 72, 12)
       ctx.fill()
       ctx.fillStyle = '#fff'
-      ctx.font = 'bold 36px Inter, system-ui, sans-serif'
+      ctx.font = '900 30px Inter, system-ui, sans-serif'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('TÚ', 64, 32)
+      ctx.fillText('INICIO: ENTRADA', 128, 36)
       const tex = new THREE.CanvasTexture(canvas)
       const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
       const sprite = new THREE.Sprite(spriteMat)
-      sprite.scale.set(3.2, 1.6, 1)
-      sprite.position.y = 7
+      sprite.scale.set(5.2, 1.45, 1)
+      sprite.position.y = 6.9
       sprite.renderOrder = 1002
       group.add(sprite)
     } else {
@@ -4662,11 +4662,6 @@ if (salonesMapRef.size > 0) {
             </div>
 
             <div className="nav-panel-body">
-              <div className="nav-entry-banner">
-                <span className="nav-entry-badge">Inicio de ruta</span>
-                <span className="nav-entry-value">Entrada</span>
-              </div>
-
               {/* Origin row */}
               <div className="nav-row">
                 <span className="nav-row-icon nav-row-icon--origin">
