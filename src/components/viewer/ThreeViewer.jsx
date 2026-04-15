@@ -1206,6 +1206,8 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
   const pointerDraggedRef = useRef(false)
   const suppressSelectionUntilRef = useRef(0)
   const salonesMapRef = useRef(new Map())
+  const salonesListRef = useRef([])
+  const pendingSearchSelectionRef = useRef(null)
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -1220,15 +1222,19 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
   const [salonesMap, setSalonesMap] = useState(new Map()) // nomenclatura -> salon
 
   useEffect(() => {
-  getSalones().then(data => {
-    const map = new Map()
-    data.forEach(s => {
-      if (s.nomenclatura) map.set(s.nomenclatura, s)
+    getSalones().then(data => {
+      const list = Array.isArray(data) ? data : []
+      salonesListRef.current = list
+
+      const map = new Map()
+      list.forEach(s => {
+        const key = String(s?.nomenclatura ?? '').trim()
+        if (key) map.set(key, s)
+      })
+      salonesMapRef.current = map  // actualiza el ref
+      setSalonesMap(map)           // mantiene el estado para el useEffect de repintado
     })
-    salonesMapRef.current = map  // actualiza el ref
-    setSalonesMap(map)           // mantiene el estado para el useEffect de repintado
-  })
-}, [])
+  }, [])
 
   useEffect(() => {
   if (salonesMap.size === 0 || meshes.current.length === 0) return
@@ -1595,14 +1601,20 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     idleTimerRef.current = null
   }
 
-  function switchModel(idx) {
-  if (idx === activeModel || transitioning) return
-  setSearch('')
-  setAssetError('')
-  exitNavigation()
-  setActiveModel(idx)
-  onPisoChange?.(MODELS[idx].short) // 'PB' o 'PA'
-}
+  function switchModel(idx, options = {}) {
+    const { preserveSearch = false } = options
+    if (idx < 0 || idx >= MODELS.length) return false
+    if (idx === activeModel || transitioning) return false
+    if (!preserveSearch) {
+      setSearch('')
+      pendingSearchSelectionRef.current = null
+    }
+    setAssetError('')
+    exitNavigation()
+    setActiveModel(idx)
+    onPisoChange?.(MODELS[idx].short) // 'PB' o 'PA'
+    return true
+  }
 
   function requestOpenScheduleForSelected() {
     const entry = selectedRef.current
@@ -1641,10 +1653,12 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     invalidateRenderRef.current()
   }
 
-  function addNavMarker(point, color, type) {
+  function addNavMarker(point, color, type, labelValue = null) {
     const scene = R.current.scene
     const group = new THREE.Group()
     group.position.copy(point)
+    const fallbackLabel = type === 'origin' ? 'Entrada' : 'Destino'
+    const markerLabel = normalizeRoomLabel(String(labelValue ?? fallbackLabel).trim()) || fallbackLabel
 
     if (type === 'origin') {
       /* ORIGIN: pulsing ring on ground + vertical beam */
@@ -1673,22 +1687,50 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
       beam.renderOrder = 1001
       group.add(beam)
       /* Label for route start (visual only; origin coordinates remain unchanged). */
+      const labelText = markerLabel
+      const fontFamily = 'Inter, system-ui, sans-serif'
+      const baseFontSize = 58
+      const horizontalPadding = 48
+      const verticalPadding = 24
+      const dpr = 2
+
+      const measureCanvas = document.createElement('canvas')
+      const measureCtx = measureCanvas.getContext('2d')
+      measureCtx.font = `900 ${baseFontSize}px ${fontFamily}`
+      const textWidth = Math.ceil(measureCtx.measureText(labelText).width)
+      const labelWidth = Math.max(420, textWidth + horizontalPadding * 2)
+      const labelHeight = baseFontSize + verticalPadding * 2
+
       const canvas = document.createElement('canvas')
-      canvas.width = 256; canvas.height = 72
+      canvas.width = labelWidth * dpr
+      canvas.height = labelHeight * dpr
       const ctx = canvas.getContext('2d')
-      ctx.fillStyle = '#22cc44'
-      ctx.roundRect(0, 0, 256, 72, 12)
+      ctx.scale(dpr, dpr)
+      ctx.fillStyle = '#0a5523'
+      ctx.strokeStyle = '#8dffbe'
+      ctx.lineWidth = 4
+      ctx.roundRect(0, 0, labelWidth, labelHeight, 20)
       ctx.fill()
-      ctx.fillStyle = '#fff'
-      ctx.font = '900 30px Inter, system-ui, sans-serif'
+      ctx.stroke()
+      ctx.font = `900 ${baseFontSize}px ${fontFamily}`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('INICIO: ENTRADA', 128, 36)
+      ctx.lineJoin = 'round'
+      ctx.lineWidth = 8
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.68)'
+      ctx.strokeText(labelText, labelWidth / 2, labelHeight / 2 + 1)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(labelText, labelWidth / 2, labelHeight / 2 + 1)
       const tex = new THREE.CanvasTexture(canvas)
-      const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.minFilter = THREE.LinearFilter
+      tex.magFilter = THREE.LinearFilter
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true })
       const sprite = new THREE.Sprite(spriteMat)
-      sprite.scale.set(5.2, 1.45, 1)
-      sprite.position.y = 6.9
+      const worldHeight = 2.35
+      const worldWidth = worldHeight * (labelWidth / labelHeight)
+      sprite.scale.set(worldWidth, worldHeight, 1)
+      sprite.position.y = 7.35
       sprite.renderOrder = 1002
       group.add(sprite)
     } else {
@@ -1725,23 +1767,50 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
       ring.position.y = 0.06
       ring.renderOrder = 999
       group.add(ring)
-      /* "DESTINO" label sprite */
+      const labelText = markerLabel
+      const fontFamily = 'Inter, system-ui, sans-serif'
+      const baseFontSize = 52
+      const horizontalPadding = 40
+      const verticalPadding = 20
+      const dpr = 2
+
+      const measureCanvas = document.createElement('canvas')
+      const measureCtx = measureCanvas.getContext('2d')
+      measureCtx.font = `900 ${baseFontSize}px ${fontFamily}`
+      const textWidth = Math.ceil(measureCtx.measureText(labelText).width)
+      const labelWidth = Math.max(340, textWidth + horizontalPadding * 2)
+      const labelHeight = baseFontSize + verticalPadding * 2
+
       const canvas = document.createElement('canvas')
-      canvas.width = 256; canvas.height = 64
+      canvas.width = labelWidth * dpr
+      canvas.height = labelHeight * dpr
       const ctx = canvas.getContext('2d')
-      ctx.fillStyle = '#ff2222'
-      ctx.roundRect(0, 0, 256, 64, 12)
+      ctx.scale(dpr, dpr)
+      ctx.fillStyle = '#7a1111'
+      ctx.strokeStyle = '#ff9a9a'
+      ctx.lineWidth = 4
+      ctx.roundRect(0, 0, labelWidth, labelHeight, 18)
       ctx.fill()
-      ctx.fillStyle = '#fff'
-      ctx.font = 'bold 30px Inter, system-ui, sans-serif'
+      ctx.stroke()
+      ctx.font = `900 ${baseFontSize}px ${fontFamily}`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('DESTINO', 128, 32)
+      ctx.lineJoin = 'round'
+      ctx.lineWidth = 8
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.68)'
+      ctx.strokeText(labelText, labelWidth / 2, labelHeight / 2 + 1)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(labelText, labelWidth / 2, labelHeight / 2 + 1)
       const tex = new THREE.CanvasTexture(canvas)
-      const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.minFilter = THREE.LinearFilter
+      tex.magFilter = THREE.LinearFilter
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true })
       const sprite = new THREE.Sprite(spriteMat)
-      sprite.scale.set(5.0, 1.25, 1)
-      sprite.position.y = 5
+      const worldHeight = 2.1
+      const worldWidth = worldHeight * (labelWidth / labelHeight)
+      sprite.scale.set(worldWidth, worldHeight, 1)
+      sprite.position.y = 5.5
       sprite.renderOrder = 1004
       group.add(sprite)
     }
@@ -2997,7 +3066,12 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
         R.current.scene?.remove(oldOrigin)
       }
 
-      const newOriginMarker = addNavMarker(snappedOriginScene, 0x22cc44, 'origin')
+      const newOriginMarker = addNavMarker(
+        snappedOriginScene,
+        0x22cc44,
+        'origin',
+        navOriginLabelRef.current ?? navOrigin ?? 'Entrada',
+      )
       if (newOriginMarker && navMarkersRef.current[navMarkersRef.current.length - 1] === newOriginMarker) {
         navMarkersRef.current.pop()
         navMarkersRef.current.unshift(newOriginMarker)
@@ -3028,7 +3102,12 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
         old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
         R.current.scene?.remove(old)
       }
-      addNavMarker(snappedDestScene, 0xff3333, 'dest')
+      addNavMarker(
+        snappedDestScene,
+        0xff3333,
+        'dest',
+        navDestLabelRef.current ?? navDest ?? 'Destino',
+      )
     }
 
     if (!waypointsNav || waypointsNav.length < 2) return
@@ -3209,7 +3288,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     const originPt = new THREE.Vector3(o[0], o[1], o[2])
     navOriginPt.current = originPt
     setNavOriginValue('Entrada')
-    addNavMarker(originPt, 0x22cc44, 'origin')
+    addNavMarker(originPt, 0x22cc44, 'origin', navOriginLabelRef.current ?? 'Entrada')
     setNavMode(true)
 
     // OPT: navmesh is loaded lazily only when navigation is requested.
@@ -3243,7 +3322,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
         old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
         R.current.scene?.remove(old)
       }
-      addNavMarker(pt, 0xff3333, 'dest')
+      addNavMarker(pt, 0xff3333, 'dest', entry.name)
       const NEIGHBOR_DIST = 8
       const visibleKeys = new Set([entry.key])
       meshes.current.forEach(m => {
@@ -3256,7 +3335,8 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     }
 
     const groupKey = entryToLabelGroupRef.current.get(entry.key)
-    if (groupKey && labelGroupsRef.current.has(groupKey)) {
+    const groupExpanded = groupKey && expandedLabelGroupRef.current === groupKey
+    if (groupKey && labelGroupsRef.current.has(groupKey) && !groupExpanded) {
       // OPT: grouped labels expand first and do not trigger piece focus.
       expandLabelGroup(groupKey)
       const overlay = R.current.labelsOverlay
@@ -3355,7 +3435,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
         old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
         R.current.scene?.remove(old)
       }
-      addNavMarker(pt, 0xff3333, 'dest')
+      addNavMarker(pt, 0xff3333, 'dest', label)
       /* Show labels for dest + contiguous solids so user can orient */
       const NEIGHBOR_DIST = 8  // max distance to consider "contiguous"
       const destWorld = hits[0].point.clone()
@@ -3378,6 +3458,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
        */
       if (prev) {
         deselectEntry(prev)
+        if (search.trim()) setSearch('')
         startCamAnim(defaultPos, defaultTarget)
       } else {
         const cameraMoved =
@@ -4399,53 +4480,481 @@ if (salonesMapRef.size > 0) {
     onRouteVisibilityChange?.(navActive)
   }, [navActive, onRouteVisibilityChange])
 
+  function normalizeViewerSearchText(value) {
+    return String(value ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+  }
+
+  function splitViewerSearchTokens(value) {
+    const clean = normalizeViewerSearchText(value)
+    if (!clean) return []
+    return clean
+      .split(/[^a-z0-9]+/g)
+      .map(token => token.trim())
+      .filter(Boolean)
+  }
+
+  function diceSimilarity(a, b) {
+    const left = String(a ?? '')
+    const right = String(b ?? '')
+    if (!left || !right) return 0
+    if (left === right) return 1
+    if (left.length < 2 || right.length < 2) return 0
+
+    const pairCount = new Map()
+    for (let i = 0; i < left.length - 1; i++) {
+      const pair = left.slice(i, i + 2)
+      pairCount.set(pair, (pairCount.get(pair) ?? 0) + 1)
+    }
+
+    let hits = 0
+    for (let i = 0; i < right.length - 1; i++) {
+      const pair = right.slice(i, i + 2)
+      const count = pairCount.get(pair) ?? 0
+      if (count <= 0) continue
+      pairCount.set(pair, count - 1)
+      hits += 1
+    }
+
+    const totalPairs = (left.length - 1) + (right.length - 1)
+    if (totalPairs <= 0) return 0
+    return (2 * hits) / totalPairs
+  }
+
+  function buildSearchContext(query) {
+    const raw = String(query ?? '').trim()
+    if (!raw) return null
+    const normalized = normalizeLookupToken(raw)
+    if (!normalized) return null
+    const tokens = splitViewerSearchTokens(raw)
+    return {
+      raw,
+      lower: normalizeViewerSearchText(raw),
+      normalized,
+      tokens,
+      code: parseFirstJCodeNumber(raw),
+    }
+  }
+
+  function getSearchMatchThreshold(ctx) {
+    if (!ctx) return 999
+    const len = ctx.normalized.length
+
+    if (ctx.code != null) {
+      if (len <= 2) return 170
+      if (len <= 4) return 120
+      return 88
+    }
+
+    if (len <= 2) return 150
+    if (len <= 4) return 96
+    if (len <= 6) return 82
+    return 72
+  }
+
+  function scoreSearchValue(ctx, candidateValue) {
+    if (!ctx) return 0
+
+    const candidateRaw = String(candidateValue ?? '').trim()
+    if (!candidateRaw) return 0
+
+    const candidateNorm = normalizeLookupToken(candidateRaw)
+    if (!candidateNorm) return 0
+
+    const candidateLower = normalizeViewerSearchText(candidateRaw)
+    let score = 0
+
+    if (candidateLower === ctx.lower) score = 170
+    else if (candidateNorm === ctx.normalized) score = 162
+    else if (candidateNorm.startsWith(ctx.normalized)) score = 134
+    else if (candidateNorm.includes(ctx.normalized) || ctx.normalized.includes(candidateNorm)) score = 112
+
+    if (ctx.tokens.length > 0) {
+      const candidateTokens = splitViewerSearchTokens(candidateRaw)
+      const tokenHits = ctx.tokens.reduce((acc, token) => {
+        const hit = candidateTokens.some(ct => (
+          ct.includes(token)
+          || token.includes(ct)
+          || candidateNorm.includes(token)
+        ))
+        return acc + (hit ? 1 : 0)
+      }, 0)
+
+      if (tokenHits > 0) {
+        score = Math.max(score, 62 + (tokenHits * 12))
+      }
+      if (tokenHits === ctx.tokens.length && ctx.tokens.length > 1) {
+        score = Math.max(score, 108 + Math.min(18, ctx.tokens.length * 4))
+      }
+    }
+
+    const similarity = diceSimilarity(ctx.normalized, candidateNorm)
+    if (similarity >= 0.42) {
+      score = Math.max(score, Math.round(50 + (similarity * 60)))
+    }
+
+    const candidateCode = parseFirstJCodeNumber(candidateRaw)
+    if (ctx.code != null && candidateCode != null) {
+      const diff = Math.abs(ctx.code - candidateCode)
+      if (diff === 0) score = Math.max(score, 190)
+      else if (diff === 1) score = Math.max(score, 94)
+      else if (diff <= 3) score = Math.max(score, 84 - (diff * 4))
+    }
+
+    return score
+  }
+
+  function scoreEntryForSearch(entry, ctx) {
+    if (!entry || !ctx) return 0
+    return Math.max(
+      scoreSearchValue(ctx, entry.name),
+      scoreSearchValue(ctx, entry.rawName),
+    )
+  }
+
+  function findBestEntryBySearchContext(ctx) {
+    if (!ctx || meshes.current.length === 0) return null
+    let best = null
+    meshes.current.forEach(entry => {
+      const score = scoreEntryForSearch(entry, ctx)
+      if (score <= 0) return
+      if (!best || score > best.score) best = { entry, score }
+    })
+    return best
+  }
+
+  function findBestSalonBySearchContext(ctx) {
+    if (!ctx) return null
+    const salones = salonesListRef.current
+    if (!Array.isArray(salones) || salones.length === 0) return null
+
+    let best = null
+    salones.forEach(salon => {
+      const score = Math.max(
+        scoreSearchValue(ctx, salon?.nomenclatura),
+        scoreSearchValue(ctx, salon?.nombre),
+      )
+      if (score <= 0) return
+      if (!best || score > best.score) best = { salon, score }
+    })
+    return best
+  }
+
+  function getModelIndexForPisoValue(pisoValue) {
+    const raw = normalizeViewerSearchText(pisoValue)
+    if (!raw) return null
+
+    const compact = raw.replace(/[^a-z0-9]+/g, '')
+    const pbIndex = MODELS.findIndex(m => m.short === 'PB')
+    const paIndex = MODELS.findIndex(m => m.short === 'PA')
+
+    if (
+      /\bpb\b/.test(raw)
+      || raw.includes('planta baja')
+      || compact === 'pb'
+      || compact === 'baja'
+      || compact === 'plantabaja'
+    ) {
+      return pbIndex >= 0 ? pbIndex : 0
+    }
+
+    if (
+      /\bpa\b/.test(raw)
+      || raw.includes('planta alta')
+      || compact === 'pa'
+      || compact === 'alta'
+      || compact === 'plantaalta'
+    ) {
+      return paIndex >= 0 ? paIndex : 1
+    }
+
+    return null
+  }
+
+  function getSalonModelIndex(salon) {
+    if (!salon) return null
+    return getModelIndexForPisoValue(salon.piso ?? salon.planta ?? salon.nivel)
+  }
+
+  function findEntryForSalonInCurrentModel(salon) {
+    if (!salon) return null
+
+    const contexts = [
+      buildSearchContext(salon.nomenclatura),
+      buildSearchContext(salon.nombre),
+    ].filter(Boolean)
+
+    let best = null
+    contexts.forEach(ctx => {
+      const candidate = findBestEntryBySearchContext(ctx)
+      if (!candidate) return
+      if (!best || candidate.score > best.score) best = candidate
+    })
+
+    return best
+  }
+
+  function findSalonSuggestionsBySearchContext(ctx, limit = 8) {
+    if (!ctx) return []
+    const salones = salonesListRef.current
+    if (!Array.isArray(salones) || salones.length === 0) return []
+    const minScore = Math.max(62, getSearchMatchThreshold(ctx) - 10)
+
+    const scored = []
+    salones.forEach(salon => {
+      const nomScore = scoreSearchValue(ctx, salon?.nomenclatura)
+      const nameScore = scoreSearchValue(ctx, salon?.nombre)
+      const score = Math.max(nomScore, nameScore)
+      if (score < minScore) return
+
+      scored.push({
+        salon,
+        score,
+      })
+    })
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      const floorA = getSalonModelIndex(a.salon)
+      const floorB = getSalonModelIndex(b.salon)
+      const sameFloorA = floorA == null || floorA === activeModel
+      const sameFloorB = floorB == null || floorB === activeModel
+      if (sameFloorA !== sameFloorB) return sameFloorA ? -1 : 1
+      const nomA = String(a.salon?.nomenclatura ?? '')
+      const nomB = String(b.salon?.nomenclatura ?? '')
+      return nomA.localeCompare(nomB, 'es', { sensitivity: 'base' })
+    })
+
+    return scored.slice(0, limit)
+  }
+
+  function resolveEntryForSalonSelection(salon) {
+    if (!salon) return null
+    const mapped = findEntryForSalonInCurrentModel(salon)
+    if (mapped?.entry) return mapped.entry
+
+    const fallbackQuery = String(salon?.nomenclatura ?? salon?.nombre ?? '').trim()
+    if (!fallbackQuery) return null
+    const fallback = findSearchMatch(fallbackQuery, { allowCrossFloor: false })
+    return fallback?.entry ?? null
+  }
+
+  function selectSalonFromSuggestion(salon) {
+    if (!salon) return
+    const salonQuery = String(salon?.nomenclatura ?? salon?.nombre ?? '').trim()
+    const targetModelIndex = getSalonModelIndex(salon)
+
+    if (targetModelIndex != null && targetModelIndex !== activeModel) {
+      pendingSearchSelectionRef.current = {
+        query: salonQuery,
+        salonId: salon?.id ?? null,
+      }
+      const switched = switchModel(targetModelIndex, { preserveSearch: true })
+      if (!switched) pendingSearchSelectionRef.current = null
+      return
+    }
+
+    const entry = resolveEntryForSalonSelection(salon)
+    if (!entry) return
+    selectEntryFromSearch(entry)
+  }
+
   useEffect(() => {
-    if (meshes.current.length === 0) return
-    const q = search.trim().toLowerCase()
+    if (meshes.current.length === 0 || navMode || navActive) return
+
+    const ctx = buildSearchContext(search)
+    const matchedKeys = new Set()
+    const matchedGroupKeys = new Set()
+    const labelMatchThreshold = ctx ? getSearchMatchThreshold(ctx) : 999
+
+    meshes.current.forEach(e => {
+      const score = ctx ? scoreEntryForSearch(e, ctx) : 0
+      if (score >= labelMatchThreshold) {
+        matchedKeys.add(e.key)
+        const groupKey = entryToLabelGroupRef.current.get(e.key)
+        if (groupKey && labelGroupsRef.current.has(groupKey)) matchedGroupKeys.add(groupKey)
+      }
+    })
+
+    if (ctx) {
+      const salonSuggestions = findSalonSuggestionsBySearchContext(ctx, 16)
+      salonSuggestions.forEach(item => {
+        if (item.score < Math.max(64, labelMatchThreshold - 8)) return
+        const salonModelIndex = getSalonModelIndex(item.salon)
+        if (salonModelIndex != null && salonModelIndex !== activeModel) return
+        const mapped = findEntryForSalonInCurrentModel(item.salon)
+        if (!mapped?.entry?.key) return
+        if ((mapped.score ?? 0) < Math.max(60, labelMatchThreshold - 6)) return
+        matchedKeys.add(mapped.entry.key)
+        const groupKey = entryToLabelGroupRef.current.get(mapped.entry.key)
+        if (groupKey && labelGroupsRef.current.has(groupKey)) matchedGroupKeys.add(groupKey)
+      })
+    }
+
+    matchedGroupKeys.forEach(groupKey => {
+      const group = labelGroupsRef.current.get(groupKey)
+      if (!group) return
+      group.memberKeys.forEach(memberKey => {
+        matchedKeys.add(memberKey)
+      })
+    })
+
     meshes.current.forEach(e => {
       if (e === selectedRef.current) return
-      const hit = q && (
-        e.name.toLowerCase().includes(q)
-        || (e.rawName?.toLowerCase()?.includes(q) ?? false)
-      )
-      if (hit)
-        setEntryColor(e, C_FOUND)
-      else
-        setEntryColor(e, e.statusColor ?? e.origColor)
+      if (matchedKeys.has(e.key)) setEntryColor(e, C_FOUND)
+      else setEntryColor(e, e.statusColor ?? e.origColor)
     })
+
+    if (!ctx) {
+      if (selectedRef.current) showLabelsForSelection(selectedRef.current)
+      else setLabelsVisible(true)
+      invalidateRenderRef.current()
+      return
+    }
+
+    labelsDataRef.current.forEach(lbl => {
+      const isMatch = matchedKeys.has(lbl.key)
+      lbl._hidden = !isMatch
+      if (isMatch) setLabelText(lbl, lbl.entryLabelName)
+    })
+    if (matchedGroupKeys.size === 1) {
+      expandedLabelGroupRef.current = [...matchedGroupKeys][0]
+    } else {
+      expandedLabelGroupRef.current = null
+    }
+    const overlay = R.current.labelsOverlay
+    if (overlay) overlay.style.opacity = labelsEnabledRef.current ? '1' : '0'
+    updateLabelsLayoutRef.current({ snap: true })
     invalidateRenderRef.current()
-  }, [search])
+  }, [search, navMode, navActive])
 
-  function findSearchMatch(query) {
-    const q = query.trim().toLowerCase()
-    if (!q || meshes.current.length === 0) return null
+  function findSearchMatch(query, options = {}) {
+    const { allowCrossFloor = true } = options
+    const ctx = buildSearchContext(query)
+    if (!ctx) return null
+    const matchThreshold = getSearchMatchThreshold(ctx)
 
-    const exact = meshes.current.find(e => {
-      const name = e.name.toLowerCase()
-      const raw = e.rawName?.toLowerCase() ?? ''
-      return name === q || raw === q
-    })
-    if (exact) return exact
+    const bestEntry = findBestEntryBySearchContext(ctx)
+    const bestSalon = findBestSalonBySearchContext(ctx)
+    const entryScore = bestEntry?.score ?? 0
 
-    const startsWith = meshes.current.find(e => {
-      const name = e.name.toLowerCase()
-      const raw = e.rawName?.toLowerCase() ?? ''
-      return name.startsWith(q) || raw.startsWith(q)
-    })
-    if (startsWith) return startsWith
+    if (bestSalon) {
+      const salonModelIndex = getSalonModelIndex(bestSalon.salon)
+      if (
+        allowCrossFloor
+        && salonModelIndex != null
+        && salonModelIndex !== activeModel
+        && bestSalon.score >= Math.max(matchThreshold, entryScore + 6)
+      ) {
+        return {
+          entry: null,
+          salon: bestSalon.salon,
+          score: bestSalon.score,
+          targetModelIndex: salonModelIndex,
+        }
+      }
 
-    return meshes.current.find(e => {
-      const name = e.name.toLowerCase()
-      const raw = e.rawName?.toLowerCase() ?? ''
-      return name.includes(q) || raw.includes(q)
-    }) ?? null
+      const mappedEntry = findEntryForSalonInCurrentModel(bestSalon.salon)
+      if (mappedEntry && mappedEntry.score >= Math.max(64, matchThreshold - 6)) {
+        return {
+          entry: mappedEntry.entry,
+          salon: bestSalon.salon,
+          score: mappedEntry.score,
+          targetModelIndex: activeModel,
+        }
+      }
+    }
+
+    if (bestEntry && bestEntry.score >= Math.max(66, matchThreshold - 4)) {
+      return {
+        entry: bestEntry.entry,
+        salon: null,
+        score: bestEntry.score,
+        targetModelIndex: activeModel,
+      }
+    }
+
+    return null
+  }
+
+  function selectEntryFromSearch(entry) {
+    if (!entry) return
+
+    const groupKey = entryToLabelGroupRef.current.get(entry.key)
+    if (
+      groupKey
+      && labelGroupsRef.current.has(groupKey)
+      && expandedLabelGroupRef.current !== groupKey
+    ) {
+      expandLabelGroup(groupKey)
+      const overlay = R.current.labelsOverlay
+      if (overlay) overlay.style.opacity = labelsEnabledRef.current ? '1' : '0'
+      updateLabelsLayoutRef.current({ snap: true })
+      invalidateRenderRef.current()
+    }
+
+    handlersRef.current.onLabelClick?.(entry.key)
+  }
+
+  useEffect(() => {
+    if (loading || transitioning) return
+    const pending = pendingSearchSelectionRef.current
+    if (!pending) return
+
+    pendingSearchSelectionRef.current = null
+    let entry = null
+
+    if (pending?.salonId != null) {
+      const pendingSalon = salonesListRef.current.find(s => String(s?.id) === String(pending.salonId))
+      if (pendingSalon) {
+        entry = resolveEntryForSalonSelection(pendingSalon)
+      }
+    }
+
+    if (!entry && pending?.query) {
+      const match = findSearchMatch(pending.query, { allowCrossFloor: false })
+      entry = match?.entry ?? null
+    }
+
+    if (!entry) return
+    selectEntryFromSearch(entry)
+  }, [loading, transitioning, activeModel])
+
+  function switchModelForSearch(targetModelIndex, query) {
+    pendingSearchSelectionRef.current = { query, salonId: null }
+    const switched = switchModel(targetModelIndex, { preserveSearch: true })
+    if (!switched) pendingSearchSelectionRef.current = null
   }
 
   function triggerSearchSelection() {
-    const match = findSearchMatch(search)
+    const query = search.trim()
+    if (!query) return
+
+    const match = findSearchMatch(query, { allowCrossFloor: true })
     if (!match) return
-    handlersRef.current.onLabelClick?.(match.key)
+
+    if (!match.entry && match.targetModelIndex != null && match.targetModelIndex !== activeModel) {
+      switchModelForSearch(match.targetModelIndex, query)
+      return
+    }
+
+    if (match.entry) {
+      selectEntryFromSearch(match.entry)
+    }
   }
+
+  const searchCtx = buildSearchContext(search)
+  const searchSuggestions = searchCtx
+    ? findSalonSuggestionsBySearchContext(searchCtx, 8)
+    : []
+  const showSearchSuggestions = (
+    search.trim().length > 0
+    && !loading
+    && !transitioning
+  )
 
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden"
@@ -4458,7 +4967,7 @@ if (salonesMapRef.size > 0) {
           boxShadow:'0 1px 3px rgba(0,0,0,0.06)',
         }}>
 
-        <div className="flex items-center gap-2 flex-1 min-w-[120px] px-2.5 py-1.5 rounded-lg"
+        <div className="relative flex items-center gap-2 flex-1 min-w-[120px] px-2.5 py-1.5 rounded-lg"
           style={{ background:'var(--color-bg)', border:'1px solid var(--color-border)' }}>
           <button
             onClick={triggerSearchSelection}
@@ -4484,6 +4993,71 @@ if (salonesMapRef.size > 0) {
               style={{ color:'var(--color-text-muted)' }}>
               <X size={11} />
             </button>
+          )}
+
+          {showSearchSuggestions && (
+            <div
+              className="absolute left-0 right-0 top-[calc(100%+8px)] z-40 overflow-hidden rounded-xl"
+              style={{
+                background: 'rgba(255,255,255,0.97)',
+                border: '1px solid var(--color-border)',
+                boxShadow: '0 10px 28px rgba(0,0,0,0.16)',
+                backdropFilter: 'blur(6px)',
+              }}
+            >
+              {searchSuggestions.length === 0 ? (
+                <div
+                  className="px-3 py-2 text-[12px]"
+                  style={{ color: 'var(--color-text-muted)' }}
+                >
+                  No hay coincidencias para "{search.trim()}"
+                </div>
+              ) : (
+                searchSuggestions.map((item, idx) => {
+                  const salon = item.salon
+                  const floorShort = String(salon?.piso ?? '').trim() || '—'
+                  const salonCode = String(salon?.nomenclatura ?? '').trim() || '—'
+                  const salonName = String(salon?.nombre ?? salonCode).trim() || salonCode
+                  const floorBadge = String(getModelIndexForPisoValue(salon?.piso ?? '') != null
+                    ? (MODELS[getModelIndexForPisoValue(salon?.piso ?? '')]?.short ?? floorShort)
+                    : floorShort)
+
+                  return (
+                    <button
+                      key={`${salon?.id ?? salon?.nomenclatura ?? idx}`}
+                      onClick={() => selectSalonFromSuggestion(salon)}
+                      className="w-full text-left px-3 py-2 transition-colors"
+                      style={{
+                        borderTop: idx === 0 ? 'none' : '1px solid rgba(0,0,0,0.06)',
+                        background: 'transparent',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.045)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-semibold truncate"
+                          style={{ color: 'var(--color-text)' }}>
+                          {salonName}
+                        </p>
+                        <span
+                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0"
+                          style={{
+                            background: 'rgba(34,197,94,0.14)',
+                            color: '#15803d',
+                          }}
+                        >
+                          {floorBadge || '—'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] truncate"
+                        style={{ color: 'var(--color-text-muted)' }}>
+                        {salonCode} · {floorShort}
+                      </p>
+                    </button>
+                  )
+                })
+              )}
+            </div>
           )}
         </div>
 

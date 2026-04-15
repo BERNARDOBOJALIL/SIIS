@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { getSalones } from '../../services/firestoreService'
 import {
   School, CheckCircle2, XCircle, Clock3, CalendarDays,
-  MapPin, FlaskConical, Users, BookOpen, Settings, Circle, ChevronRight,
+  MapPin, FlaskConical, Users, BookOpen, Settings, Circle, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import HorarioGrid from '../common/HorarioGrid'
 
@@ -60,20 +60,34 @@ function scoreSalonMatch(salon, tokens) {
   return score
 }
 
-function findBestSalonByReference(reference, salones) {
+function findSalonMatchesByReference(reference, salones) {
   const tokens = splitReferenceTokens(reference)
     .map(normalizeRefText)
     .filter(Boolean)
-  if (tokens.length === 0 || !Array.isArray(salones) || salones.length === 0) return null
+  if (tokens.length === 0 || !Array.isArray(salones) || salones.length === 0) return []
 
-  let best = null
+  const scored = []
   salones.forEach(salon => {
     const score = scoreSalonMatch(salon, tokens)
     if (score <= 0) return
-    if (!best || score > best.score) best = { salon, score }
+    scored.push({ salon, score })
   })
 
-  return best?.salon ?? null
+  if (scored.length === 0) return []
+
+  scored.sort((a, b) => b.score - a.score)
+  const bestScore = scored[0].score
+  const minScore = Math.max(4, bestScore - 4)
+
+  const unique = new Map()
+  scored.forEach(item => {
+    if (item.score < minScore) return
+    const key = String(item.salon?.id ?? item.salon?.nomenclatura ?? '')
+    if (!key || unique.has(key)) return
+    unique.set(key, item.salon)
+  })
+
+  return [...unique.values()]
 }
 
 function estaDisponible(salon) {
@@ -133,8 +147,11 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
   const now    = useDateTime()
   const [salones,  setSalones]  = useState([])
   const [loading,  setLoading]  = useState(true)
-  const [salonSel, setSalonSel] = useState(null)
+  const [salonSelGroup, setSalonSelGroup] = useState([])
+  const [salonSelIndex, setSalonSelIndex] = useState(0)
   const lastHandledOpenRequestRef = useRef(0)
+
+  const salonSel = salonSelGroup[salonSelIndex] ?? null
 
   useEffect(() => {
     getSalones().then(data => {
@@ -156,17 +173,82 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
   ), [salones, piso, now])
   const libres = salonesConDisp.filter(s => s.disp === true).length
 
+  function closeSalonDetails() {
+    setSalonSelGroup([])
+    setSalonSelIndex(0)
+  }
+
+  function openSalonDetailsGroup(group, preferredId = null) {
+    const base = Array.isArray(group) ? group.filter(Boolean) : []
+    if (base.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    const uniqueMap = new Map()
+    base.forEach(item => {
+      const key = String(item?.id ?? item?.nomenclatura ?? '')
+      if (!key || uniqueMap.has(key)) return
+      uniqueMap.set(key, item)
+    })
+    const unique = [...uniqueMap.values()]
+    if (unique.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    let nextIndex = 0
+    if (preferredId != null) {
+      const idx = unique.findIndex(item => String(item?.id) === String(preferredId))
+      if (idx >= 0) nextIndex = idx
+    }
+
+    setSalonSelGroup(unique)
+    setSalonSelIndex(nextIndex)
+  }
+
+  function moveSalonDetails(step) {
+    if (!salonSelGroup.length) return
+    setSalonSelIndex(prev => {
+      const next = prev + step
+      if (next < 0) return salonSelGroup.length - 1
+      if (next >= salonSelGroup.length) return 0
+      return next
+    })
+  }
+
   useEffect(() => {
     if (!openSalonDetailsRequest?.name || salonesConDisp.length === 0) return
     const requestStamp = Number(openSalonDetailsRequest?.stamp ?? 0)
     if (requestStamp && requestStamp === lastHandledOpenRequestRef.current) return
 
-    const match = findBestSalonByReference(openSalonDetailsRequest.name, salonesConDisp)
-    if (match) {
-      setSalonSel(match)
+    const matches = findSalonMatchesByReference(openSalonDetailsRequest.name, salonesConDisp)
+    if (matches.length > 0) {
+      openSalonDetailsGroup(matches, openSalonDetailsRequest?.salonId ?? null)
       if (requestStamp) lastHandledOpenRequestRef.current = requestStamp
     }
   }, [openSalonDetailsRequest, salonesConDisp])
+
+  useEffect(() => {
+    if (salonSelGroup.length === 0) return
+
+    const refreshed = salonSelGroup
+      .map(item => salonesConDisp.find(s => String(s?.id) === String(item?.id)))
+      .filter(Boolean)
+
+    if (refreshed.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    const currentId = salonSel?.id
+    let nextIndex = refreshed.findIndex(item => String(item?.id) === String(currentId))
+    if (nextIndex < 0) nextIndex = 0
+
+    setSalonSelGroup(refreshed)
+    setSalonSelIndex(nextIndex)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salonesConDisp])
 
   return (
     <aside
@@ -264,7 +346,7 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
       return (
         <div
           key={salon.id}
-          onClick={() => setSalonSel(salon)}
+          onClick={() => openSalonDetailsGroup([salon], salon.id)}
           className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-pointer hover:opacity-80"
           style={{
             border: `1px solid ${
@@ -342,7 +424,7 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
   <div
     className="fixed inset-0 z-50 flex items-center justify-center p-4"
     style={{ background: 'rgba(0,0,0,0.4)' }}
-    onClick={() => setSalonSel(null)}
+    onClick={closeSalonDetails}
   >
     <div
       className="w-full max-w-sm rounded-2xl p-5 flex flex-col gap-3 overflow-y-auto max-h-[80vh]"
@@ -361,10 +443,53 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
             {salonSel.nombre ?? salonSel.nomenclatura ?? '—'}
           </h3>
         </div>
-        <button onClick={() => setSalonSel(null)}
-          className="text-[20px] leading-none font-light"
-          style={{ color: 'var(--color-text-muted)' }}>✕</button>
+        <div className="flex items-center gap-1.5">
+          {salonSelGroup.length > 1 && (
+            <>
+              <button
+                onClick={() => moveSalonDetails(-1)}
+                className="p-1 rounded-md"
+                title="Ver salón anterior"
+                style={{ color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span
+                className="text-[11px] font-semibold px-1"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {salonSelIndex + 1}/{salonSelGroup.length}
+              </span>
+              <button
+                onClick={() => moveSalonDetails(1)}
+                className="p-1 rounded-md"
+                title="Ver siguiente salón"
+                style={{ color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </>
+          )}
+          <button
+            onClick={closeSalonDetails}
+            className="text-[20px] leading-none font-light"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            ✕
+          </button>
+        </div>
       </div>
+
+      {salonSelGroup.length > 1 && (
+        <div
+          className="flex items-center justify-between rounded-lg px-3 py-2"
+          style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}
+        >
+          <p className="text-[11px] font-semibold" style={{ color: 'var(--color-text)' }}>
+            Este bloque incluye {salonSelGroup.length} salones. Usa los botones para cambiar.
+          </p>
+        </div>
+      )}
 
       {/* Disponibilidad */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
