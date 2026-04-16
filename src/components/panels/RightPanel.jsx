@@ -91,11 +91,21 @@ function findSalonMatchesByReference(reference, salones) {
 }
 
 function estaDisponible(salon) {
-  // Si no tiene horario ni tipoHorario, no hay info suficiente
-  if (!salon.tipoHorario || !salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+if (!salon.tipoHorario) return null
 
-  const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
-  if (bloques.length === 0) return null
+// Si es de clases pero no tiene horario → siempre disponible en horario del edificio
+if (salon.tipoHorario === 'clases' && (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0)) {
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+  const edificioCerrado = diaSemana === 0 || (diaSemana === 6 && minutos >= 14 * 60)
+  return edificioCerrado ? 'cerrado' : true
+}
+
+if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+
+const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
+if (bloques.length === 0) return null
 
   const ahora = new Date()
   const diaSemana = ahora.getDay()
@@ -544,17 +554,17 @@ export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
       )}
 
       {/* Horario */}
-{Array.isArray(salonSel.horario) && salonSel.horario.filter(b => b?.dia).length > 0 && (
+{salonSel.tipoHorario && (
   <div>
     <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
       style={{ color: 'var(--color-text-muted)' }}>
       {salonSel.tipoHorario === 'operacion' ? 'Horario de operación' : 'Horario de clases'}
     </p>
     {salonSel.tipoHorario === 'clases' ? (
-      <HorarioGrid horario={salonSel.horario} />
+      <HorarioGrid horario={salonSel.horario ?? []} />
     ) : (
       <div className="flex flex-col gap-1">
-        {salonSel.horario.filter(b => b?.dia).map((b, i) => (
+        {(salonSel.horario ?? []).filter(b => b?.dia).map((b, i) => (
           <div key={i} className="flex items-center justify-between text-[12px] px-2 py-1 rounded-lg"
             style={{ background: 'var(--color-bg)' }}>
             <span className="capitalize font-medium" style={{ color: 'var(--color-text)' }}>{b.dia}</span>

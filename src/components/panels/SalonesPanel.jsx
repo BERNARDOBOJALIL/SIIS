@@ -30,23 +30,29 @@ function normalizarDia(dia) {
 }
 
 function estaDisponible(salon) {
-  const ahora = new Date()
-  const diaSemana = ahora.getDay()
-  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+  if (!salon.tipoHorario) return null
 
-  const edificioCerrado =
-    diaSemana === 0 ||
-    (diaSemana === 6 && minutos >= 14 * 60)
-
-  if (edificioCerrado) return 'cerrado'
-
-  const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  if (salon.tipoHorario === 'clases' && (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0)) {
+    const ahora = new Date()
+    const diaSemana = ahora.getDay()
+    const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+    const edificioCerrado = diaSemana === 0 || (diaSemana === 6 && minutos >= 14 * 60)
+    return edificioCerrado ? 'cerrado' : true
+  }
 
   if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
 
   const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
   if (bloques.length === 0) return null
+
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+  const edificioCerrado = diaSemana === 0 || (diaSemana === 6 && minutos >= 14 * 60)
+  if (edificioCerrado) return 'cerrado'
+
+  const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 
   if (salon.tipoHorario === 'operacion') {
     const abierto = bloques.some(b => {
@@ -75,7 +81,7 @@ function DispBadge({ disp }) {
   if (disp === true)     return <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#16a34a' }}><CheckCircle2 size={12} />Disponible</span>
   if (disp === false)    return <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#dc2626' }}><XCircle size={12} />Ocupado</span>
   if (disp === 'cerrado')return <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#94a3b8' }}><XCircle size={12} />Cerrado</span>
-  return                        <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#94a3b8' }}><Circle  size={12} />Sin info</span>
+  return                        <span className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#f59e0b' }}><Circle  size={12} />Sin info</span>
 }
 
 export default function SalonesPanel() {
@@ -199,10 +205,11 @@ export default function SalonesPanel() {
                   style={{
                     background: 'var(--color-site-white)',
                     border: `1px solid ${
-                      salon.disp === true     ? '#bbf7d0' :
-                      salon.disp === false    ? '#fecdd3' :
-                      salon.disp === 'cerrado'? '#e2e8f0' : 'var(--color-border)'
-                    }`,
+  salon.disp === true     ? '#bbf7d0' :
+  salon.disp === false    ? '#fecdd3' :
+  salon.disp === 'cerrado'? '#e2e8f0' :
+  salon.disp === null     ? '#fed7aa' : 'var(--color-border)'
+}`,
                   }}>
 
                   {/* Header card */}
@@ -249,19 +256,18 @@ export default function SalonesPanel() {
                   )}
 
                   {/* Horario */}
-{Array.isArray(salon.horario) && salon.horario.filter(b => b?.dia).length > 0 && (
+{salon.tipoHorario && (
   <div>
-    <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+    <p className="text-[10px] font-semibold uppercase tracking-wider mb-1"
       style={{ color: 'var(--color-text-muted)' }}>
       {salon.tipoHorario === 'operacion' ? 'Horario de operación' : 'Horario de clases'}
     </p>
     {salon.tipoHorario === 'clases' ? (
-      <HorarioGrid horario={salon.horario} />
+      <HorarioGrid horario={salon.horario ?? []} />
     ) : (
-      <div className="flex flex-col gap-1">
-        {salon.horario.filter(b => b?.dia).map((b, i) => (
-          <div key={i} className="flex items-center justify-between text-[12px] px-2 py-1 rounded-lg"
-            style={{ background: 'var(--color-bg)' }}>
+      <div className="flex flex-col gap-0.5">
+        {(salon.horario ?? []).filter(b => b?.dia).map((b, i) => (
+          <div key={i} className="flex items-center justify-between text-[11px]">
             <span className="capitalize font-medium" style={{ color: 'var(--color-text)' }}>{b.dia}</span>
             <span style={{ color: 'var(--color-text-muted)' }}>{b.inicio} – {b.fin}</span>
           </div>
