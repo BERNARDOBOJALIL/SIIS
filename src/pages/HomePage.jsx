@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import ThreeViewer from '../components/viewer/ThreeViewer'
 import { useChatContext } from '../components/layout/MainLayout'
+import { SIIS_CHAT_CONTEXT_KEYS } from '../utils'
 
 // OPT: split route UI bundle from the 3D viewer bundle.
 const RightPanel = lazy(() => import('../components/panels/RightPanel'))
@@ -18,11 +19,24 @@ export default function HomePage() {
 
   const handleOpenSalonDetails = useCallback((payload) => {
     if (!payload?.name) return
+
+    try {
+      localStorage.setItem(SIIS_CHAT_CONTEXT_KEYS.lastSelectedSalon, JSON.stringify({
+        key: payload.key,
+        name: payload.name,
+        rawName: payload.rawName,
+        floor: pisoActivo,
+        timestamp: Date.now(),
+      }))
+    } catch {
+      // Ignorar errores de almacenamiento local.
+    }
+
     setOpenSalonDetailsRequest({
       ...payload,
       stamp: Date.now(),
     })
-  }, [])
+  }, [pisoActivo])
 
   useEffect(() => {
     let cancelled = false
@@ -54,6 +68,14 @@ export default function HomePage() {
   useEffect(() => {
     setChatOpen(!routeVisible)
   }, [routeVisible, setChatOpen])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIIS_CHAT_CONTEXT_KEYS.activeFloor, pisoActivo)
+    } catch {
+      // Ignorar errores de almacenamiento local.
+    }
+  }, [pisoActivo])
 
   return (
     /*

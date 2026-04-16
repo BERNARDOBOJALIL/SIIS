@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
 import { getSalones } from '../../services/firestoreService'
+import { SIIS_CHAT_CONTEXT_KEYS } from '../../utils'
 
 const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
@@ -64,6 +65,8 @@ const LABEL_OVERLAP_ITER_DYNAMIC = 10
 const LABEL_MOVE_LERP = 0.52
 const CLICK_BLOCK_AFTER_DRAG_MS = 180
 const POINTER_DRAG_THRESHOLD_PX = 6
+const MAX_ROUTE_CONTEXT_STEPS = 6
+const MAX_ROUTE_DIRECTION_STEPS = 4
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -1329,6 +1332,56 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     }
     navDestLabelRef.current = value
     setNavDest(value)
+  }
+
+  function persistRouteChatContext(payload) {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        SIIS_CHAT_CONTEXT_KEYS.routeGuidance,
+        JSON.stringify(payload),
+      )
+    } catch {
+      // Ignorar errores de almacenamiento local para no romper la navegacion.
+    }
+  }
+
+  function clearRouteChatContext() {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.removeItem(SIIS_CHAT_CONTEXT_KEYS.routeGuidance)
+    } catch {
+      // Ignorar errores de almacenamiento local para no romper la navegacion.
+    }
+  }
+
+  function buildRouteChatContextPayload(instructions = []) {
+    const steps = (Array.isArray(instructions) ? instructions : [])
+      .map(instr => String(instr?.text || '').trim())
+      .filter(Boolean)
+
+    const normalizedSteps = steps.map(step => step.toLowerCase())
+    const leftTurns = normalizedSteps.filter(step => step.includes('izquierda')).length
+    const rightTurns = normalizedSteps.filter(step => step.includes('derecha')).length
+    const directionSteps = steps
+      .filter(step => {
+        const normalized = step.toLowerCase()
+        return normalized.includes('izquierda') || normalized.includes('derecha')
+      })
+      .slice(0, MAX_ROUTE_DIRECTION_STEPS)
+
+    return {
+      active: true,
+      floor: MODELS[activeModel]?.short ?? null,
+      floorLabel: MODELS[activeModel]?.label ?? null,
+      origin: navOriginLabelRef.current ?? navOrigin ?? null,
+      destination: navDestLabelRef.current ?? navDest ?? null,
+      leftTurns,
+      rightTurns,
+      directionSteps,
+      steps: steps.slice(0, MAX_ROUTE_CONTEXT_STEPS),
+      generatedAt: Date.now(),
+    }
   }
 
   /* ── Limpia todas las etiquetas del overlay ── */
@@ -4479,6 +4532,14 @@ if (salonesMapRef.size > 0) {
   useEffect(() => {
     onRouteVisibilityChange?.(navActive)
   }, [navActive, onRouteVisibilityChange])
+
+  useEffect(() => {
+    if (navActive && navInstructions.length > 0) {
+      persistRouteChatContext(buildRouteChatContextPayload(navInstructions))
+      return
+    }
+    clearRouteChatContext()
+  }, [navActive, navInstructions, navOrigin, navDest, activeModel])
 
   function normalizeViewerSearchText(value) {
     return String(value ?? '')
