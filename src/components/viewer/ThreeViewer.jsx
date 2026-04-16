@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { buildNavGraph, findPath, findTriangle, nearestReachablePointInComponent } from './navPathfinding'
 import { getSalones } from '../../services/firestoreService'
-import { SIIS_CHAT_CONTEXT_KEYS } from '../../utils'
+import { SIIS_CHAT_CONTEXT_KEYS, SIIS_CHAT_EVENT_NAMES } from '../../utils'
 
 const MODELS = [
   { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
@@ -67,6 +67,7 @@ const CLICK_BLOCK_AFTER_DRAG_MS = 180
 const POINTER_DRAG_THRESHOLD_PX = 6
 const MAX_ROUTE_CONTEXT_STEPS = 6
 const MAX_ROUTE_DIRECTION_STEPS = 4
+const AUTO_ROUTE_RETRY_MS = 220
 
 const STATUS_COLORS = {
   disponible: '#22c55e', ocupado: '#ef4444', administrativo: '#3b82f6',
@@ -1282,6 +1283,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
   const navModeLiveRef = useRef(false)
   const navSpeechRunIdRef = useRef(0)
   const navLoadStateRef = useRef({ modelIndex: -1, loading: false, promise: null })
+  const pendingAutoRouteRef = useRef(null)
 
   const [loadProgress, setLoadProgress] = useState({
     phase: 'Inicializando',
@@ -1332,6 +1334,143 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     }
     navDestLabelRef.current = value
     setNavDest(value)
+  }
+
+  function modelIndexFromPisoValue(pisoValue) {
+    const token = normalizeLookupToken(pisoValue)
+    if (!token) return null
+    if (token === 'pa' || token.includes('plantaalta') || token === 'alta') return 1
+    if (token === 'pb' || token.includes('plantabaja') || token === 'baja') return 0
+    return null
+  }
+
+  function inferModelIndexFromRouteLabel(label) {
+    const matches = findSalonesForEntryName(label, salonesMapRef.current)
+    if (!matches || matches.length === 0) return null
+
+    for (const salon of matches) {
+      const idx = modelIndexFromPisoValue(salon?.piso)
+      if (idx != null) return idx
+    }
+
+    return null
+  }
+
+  function findBestEntryForRouteLabel(label) {
+    const targetRaw = String(label ?? '').trim()
+    if (!targetRaw) return null
+
+    const targetCompact = normalizeLookupToken(targetRaw)
+    const targetNorm = normalizeInstructionText(normalizeRoomLabel(targetRaw))
+    const targetCode = parseFirstJCodeNumber(targetRaw)
+
+    let bestEntry = null
+    let bestScore = 0
+
+    meshes.current.forEach((entry) => {
+      let score = 0
+      const names = [
+        entry?.name,
+        entry?.rawName,
+        normalizeRoomLabel(entry?.name),
+      ].map(value => String(value ?? '').trim()).filter(Boolean)
+
+      names.forEach((name) => {
+        const compact = normalizeLookupToken(name)
+        const norm = normalizeInstructionText(name)
+
+        if (targetCompact && compact === targetCompact) score += 20
+        else if (targetCompact && (compact.includes(targetCompact) || targetCompact.includes(compact))) score += 12
+
+        if (targetNorm && norm === targetNorm) score += 18
+        else if (targetNorm && norm.includes(targetNorm)) score += 10
+
+        splitNameParts(name).forEach((part) => {
+          const partCompact = normalizeLookupToken(part)
+          if (targetCompact && partCompact === targetCompact) score += 16
+        })
+      })
+
+      const entryCode = parseFirstJCodeNumber(entry?.name ?? '')
+      if (targetCode != null && entryCode === targetCode) score += 24
+
+      if (score > bestScore) {
+        bestScore = score
+        bestEntry = entry
+      }
+    })
+
+    return bestScore > 0 ? bestEntry : null
+  }
+
+  function setNavigationDestination({ entry = null, point = null, label = null, applyClickOffset = false } = {}) {
+    const sourcePoint = point ? point.clone() : (entry ? getEntryWorldCenter(entry, 'focus') : null)
+    if (!sourcePoint) return false
+
+    const targetPoint = sourcePoint.clone()
+    if (applyClickOffset) {
+      targetPoint.z += ROUTE_CLICK_Z_OFFSET
+    }
+
+    const targetLabel = String(label || entry?.name || 'punto').trim() || 'punto'
+
+    navDestPt.current = targetPoint
+    setNavDestValue(targetLabel)
+    setNavActive(false)
+    setNavInstructions([])
+    stopInstructionNarration()
+    clearRouteVisuals()
+
+    while (navMarkersRef.current.length > 1) {
+      const old = navMarkersRef.current.pop()
+      old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
+      R.current.scene?.remove(old)
+    }
+
+    addNavMarker(targetPoint, 0xff3333, 'dest', targetLabel)
+
+    const NEIGHBOR_DIST = 8
+    const anchor = entry ? getEntryWorldCenter(entry, 'focus') : sourcePoint.clone()
+    const visibleKeys = new Set(entry ? [entry.key] : [])
+    meshes.current.forEach(m => {
+      const wp = getEntryWorldCenter(m)
+      if (wp.distanceTo(anchor) < NEIGHBOR_DIST) visibleKeys.add(m.key)
+    })
+    showOnlyLabels(visibleKeys)
+
+    buildRoute()
+    return true
+  }
+
+  function requestAutoRouteFromChat(targetLabel) {
+    const rawTarget = String(targetLabel ?? '').trim()
+    if (!rawTarget) {
+      pendingAutoRouteRef.current = null
+      return false
+    }
+
+    const foundEntry = findBestEntryForRouteLabel(rawTarget)
+    if (foundEntry) {
+      pendingAutoRouteRef.current = null
+
+      if (!navModeLiveRef.current) {
+        enterNavMode()
+        navModeLiveRef.current = true
+      }
+
+      setNavigationDestination({ entry: foundEntry, label: foundEntry.name })
+      return true
+    }
+
+    const suggestedModelIndex = inferModelIndexFromRouteLabel(rawTarget)
+    if (suggestedModelIndex != null && suggestedModelIndex !== activeModel) {
+      pendingAutoRouteRef.current = { targetLabel: rawTarget }
+      switchModel(suggestedModelIndex, { preserveSearch: true })
+      return false
+    }
+
+    pendingAutoRouteRef.current = null
+    return false
   }
 
   function persistRouteChatContext(payload) {
@@ -3361,29 +3500,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
 
     if (navMode) {
       /* Navigate to this piece */
-      const center = getEntryWorldCenter(entry, 'focus')
-      const pt = center.clone()
-
-      navDestPt.current = pt
-      setNavDestValue(entry.name)
-      setNavActive(false)
-      setNavInstructions([])
-      stopInstructionNarration()
-      clearRouteVisuals()
-      while (navMarkersRef.current.length > 1) {
-        const old = navMarkersRef.current.pop()
-        old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
-        R.current.scene?.remove(old)
-      }
-      addNavMarker(pt, 0xff3333, 'dest', entry.name)
-      const NEIGHBOR_DIST = 8
-      const visibleKeys = new Set([entry.key])
-      meshes.current.forEach(m => {
-        const wp = getEntryWorldCenter(m)
-        if (wp.distanceTo(center) < NEIGHBOR_DIST) visibleKeys.add(m.key)
-      })
-      showOnlyLabels(visibleKeys)
-      buildRoute()
+      setNavigationDestination({ entry, label: entry.name })
       return
     }
 
@@ -3472,33 +3589,12 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
       const label = entry ? entry.name : 'punto'
       /* Use building surface hit; conversion to nav coordinates is handled
         in buildRoute using the computed scene->nav offset. */
-      const pt = hits[0].point.clone()
-      pt.z += ROUTE_CLICK_Z_OFFSET
-
-      /* Origin is always fixed (set in enterNavMode), click only sets dest */
-      navDestPt.current = pt
-      setNavDestValue(label)
-      setNavActive(false)
-      setNavInstructions([])
-      stopInstructionNarration()
-      clearRouteVisuals()
-      /* Keep only origin marker, remove old dest marker */
-      while (navMarkersRef.current.length > 1) {
-        const old = navMarkersRef.current.pop()
-        old.traverse(c => { c.geometry?.dispose(); c.material?.dispose() })
-        R.current.scene?.remove(old)
-      }
-      addNavMarker(pt, 0xff3333, 'dest', label)
-      /* Show labels for dest + contiguous solids so user can orient */
-      const NEIGHBOR_DIST = 8  // max distance to consider "contiguous"
-      const destWorld = hits[0].point.clone()
-      const visibleKeys = new Set(entry ? [entry.key] : [])
-      meshes.current.forEach(m => {
-        const wp = getEntryWorldCenter(m)
-        if (wp.distanceTo(destWorld) < NEIGHBOR_DIST) visibleKeys.add(m.key)
+      setNavigationDestination({
+        entry,
+        point: hits[0].point,
+        label,
+        applyClickOffset: true,
       })
-      showOnlyLabels(visibleKeys)
-      buildRoute()
       return
     }
 
@@ -4540,6 +4636,41 @@ if (salonesMapRef.size > 0) {
     }
     clearRouteChatContext()
   }, [navActive, navInstructions, navOrigin, navDest, activeModel])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const pending = pendingAutoRouteRef.current
+    if (!pending?.targetLabel) return undefined
+
+    const timerId = window.setTimeout(() => {
+      requestAutoRouteFromChat(pending.targetLabel)
+    }, AUTO_ROUTE_RETRY_MS)
+
+    return () => {
+      window.clearTimeout(timerId)
+    }
+  }, [activeModel])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+
+    const handleAutoRouteRequest = (event) => {
+      const targetLabel = String(event?.detail?.targetLabel ?? '').trim()
+      if (!targetLabel) return
+
+      pendingAutoRouteRef.current = { targetLabel }
+
+      window.setTimeout(() => {
+        requestAutoRouteFromChat(targetLabel)
+      }, 0)
+    }
+
+    window.addEventListener(SIIS_CHAT_EVENT_NAMES.autoRouteRequest, handleAutoRouteRequest)
+
+    return () => {
+      window.removeEventListener(SIIS_CHAT_EVENT_NAMES.autoRouteRequest, handleAutoRouteRequest)
+    }
+  }, [activeModel, transitioning, navMode])
 
   function normalizeViewerSearchText(value) {
     return String(value ?? '')

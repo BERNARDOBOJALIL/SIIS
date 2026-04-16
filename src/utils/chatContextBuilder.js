@@ -6,6 +6,10 @@ export const SIIS_CHAT_CONTEXT_KEYS = {
   routeGuidance: 'siis_route_guidance',
 }
 
+export const SIIS_CHAT_EVENT_NAMES = {
+  autoRouteRequest: 'siis:auto-route-request',
+}
+
 const SCHEDULE_LITERAL_MARKERS = [
   'horario completo',
   'horarios completos',
@@ -31,6 +35,30 @@ const ROUTE_PROMPT_MARKERS = [
   'donde',
   'ubicacion',
   'esta',
+]
+const SALON_QUERY_MARKERS = [
+  'salon',
+  'salones',
+  'laboratorio',
+  'equipamiento',
+  'equipo',
+  'responsable',
+  'responsables',
+  'docente',
+  'profesor',
+  'administrativo',
+  'j-',
+]
+
+const AUTO_ROUTE_PROMPT_MARKERS = [
+  'como llego',
+  'como llegar',
+  'indicaciones',
+  'ruta',
+  'guiame',
+  'llevame',
+  'donde esta',
+  'ubicame',
 ]
 
 function normalizeText(value = '') {
@@ -182,9 +210,15 @@ function readMapContext() {
   }
 }
 
-function shouldIncludeRouteGuidance(promptNorm) {
-  if (!promptNorm) return false
-  return ROUTE_PROMPT_MARKERS.some(marker => promptNorm.includes(marker))
+function shouldIncludeRouteGuidance(promptNorm, routeGuidance) {
+  const routeActive = Boolean(routeGuidance?.active)
+  if (!routeActive) return false
+  if (!promptNorm) return true
+  return (
+    ROUTE_PROMPT_MARKERS.some(marker => promptNorm.includes(marker))
+    || SALON_QUERY_MARKERS.some(marker => promptNorm.includes(marker))
+    || routeActive
+  )
 }
 
 function compactRouteGuidance(routeGuidance) {
@@ -249,6 +283,70 @@ function findSalonBySelection(selection, salones) {
   return null
 }
 
+function hasAutoRouteIntent(promptNorm) {
+  if (!promptNorm) return false
+  return AUTO_ROUTE_PROMPT_MARKERS.some(marker => promptNorm.includes(marker))
+}
+
+function formatJCodeFromPrompt(promptText) {
+  const match = String(promptText || '').match(J_CODE_PATTERN)
+  if (!match) return null
+  const number = Number.parseInt(match[1], 10)
+  if (!Number.isFinite(number)) return null
+  return `J-${String(number).padStart(3, '0')}`
+}
+
+function findSalonByJCode(jCode, salones) {
+  if (!jCode || !Array.isArray(salones) || salones.length === 0) return null
+  const target = normalizeText(jCode)
+  return salones.find((salon) => {
+    const nom = normalizeText(salon?.nomenclatura)
+    return nom === target || nom.includes(target)
+  }) || null
+}
+
+function findBestSalonFromPrompt(promptText, promptNorm, salones) {
+  if (!Array.isArray(salones) || salones.length === 0) return null
+
+  const jCode = formatJCodeFromPrompt(promptText)
+  const byCode = findSalonByJCode(jCode, salones)
+  if (byCode) return byCode
+
+  const tokens = tokenize(promptNorm)
+  const scored = salones
+    .map(salon => ({ salon, score: scoreSalon(salon, promptNorm, tokens) }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  return scored[0]?.salon || null
+}
+
+export function buildAutoRouteRequest({ prompt, salones = [] } = {}) {
+  const promptText = String(prompt || '').trim()
+  if (!promptText) return { enabled: false }
+
+  const promptNorm = normalizeText(promptText)
+  if (!hasAutoRouteIntent(promptNorm)) {
+    return { enabled: false }
+  }
+
+  const targetSalon = findBestSalonFromPrompt(promptText, promptNorm, salones)
+  if (!targetSalon) {
+    return { enabled: false }
+  }
+
+  const targetLabel = String(targetSalon?.nomenclatura || targetSalon?.nombre || '').trim()
+  if (!targetLabel) {
+    return { enabled: false }
+  }
+
+  return {
+    enabled: true,
+    targetLabel,
+    targetSalon: compactSalon(targetSalon),
+  }
+}
+
 function pickRelevantSalones(promptNorm, salones, maxItems = 3) {
   if (!Array.isArray(salones) || salones.length === 0) return []
   const tokens = tokenize(promptNorm)
@@ -269,7 +367,7 @@ export function buildFrontendChatContext({ prompt, salones = [], maxChars = 1400
   const mapContext = readMapContext()
   const relevantSalones = pickRelevantSalones(promptNorm, salones, 3)
   const selectedSalon = findSalonBySelection(mapContext.selectedSalon, salones)
-  const includeRouteGuidance = shouldIncludeRouteGuidance(promptNorm)
+  const includeRouteGuidance = shouldIncludeRouteGuidance(promptNorm, mapContext.routeGuidance)
   const routeGuidance = includeRouteGuidance ? compactRouteGuidance(mapContext.routeGuidance) : null
 
   const basePayload = {

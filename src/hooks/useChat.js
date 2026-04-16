@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { chatService } from '../services/chatService'
 import { getSalones } from '../services/firestoreService'
-import { buildFrontendChatContext } from '../utils'
+import { buildAutoRouteRequest, buildFrontendChatContext, SIIS_CHAT_EVENT_NAMES } from '../utils'
 
 /**
  * Hook personalizado para manejar la lógica del chat
@@ -78,6 +78,13 @@ export function useChat() {
 
     try {
       const salones = await warmSalonesCache()
+      const autoRouteRequest = buildAutoRouteRequest({ prompt, salones })
+      if (autoRouteRequest?.enabled && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(SIIS_CHAT_EVENT_NAMES.autoRouteRequest, {
+          detail: autoRouteRequest,
+        }))
+      }
+
       const frontendContext = buildFrontendChatContext({
         prompt,
         salones,

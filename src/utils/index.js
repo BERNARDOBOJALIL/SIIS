@@ -1,2 +1,7 @@
 export { formatDate, capitalize, truncate, uniqueId } from './helpers'
-export { buildFrontendChatContext, SIIS_CHAT_CONTEXT_KEYS } from './chatContextBuilder'
+export {
+	buildFrontendChatContext,
+	buildAutoRouteRequest,
+	SIIS_CHAT_CONTEXT_KEYS,
+	SIIS_CHAT_EVENT_NAMES,
+} from './chatContextBuilder'
