@@ -93,7 +93,7 @@ function extractJCodeNumber(...values) {
 
 function zoneHintFromCode(code) {
   if (!Number.isFinite(code)) return ''
-  if (code <= 8) return 'zona cercana al acceso principal'
+  if (code <= 7) return 'Bloque derecho'
   if (code <= 17) return 'zona media del pasillo principal'
   return 'zona del fondo del pasillo principal'
 }
