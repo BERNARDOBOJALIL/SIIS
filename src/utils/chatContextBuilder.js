@@ -94,13 +94,17 @@ function extractJCodeNumber(...values) {
 function zoneHintFromCode(code) {
   if (!Number.isFinite(code)) return ''
   if (code <= 7) return 'Bloque derecho'
-  if (code <= 17) return 'zona media del pasillo principal'
-  return 'zona del fondo del pasillo principal'
+  if (code >7 &&  code < 12) return 'A la izquierda de la entrada principal'
+  if (code >= 12 && code <= 19) return 'Bloque izquierdo'
+  if (code >= 20 && code <= 24) return 'Zona central por la explanada'
+  if (code == 25) return 'En la explanda'
+  return 'A la derecha de la entrada principal'
 }
 
 function stairsHintFromCode(code) {
   if (!Number.isFinite(code)) return ''
-  if (code >= 10 && code <= 18) return 'referencia cercana a la escalera entre plantas'
+  if (code >= 12 && code <= 19) return 'referencia cercana a la escalera izquierda'
+  if (code >= 1  && code <= 7) return 'referencia cercana a la escalera derecha'
   return ''
 }
 
