@@ -1107,8 +1107,9 @@ function calcularDisponibilidad(salon) {
   const minutos = ahora.getHours() * 60 + ahora.getMinutes()
 
   const edificioCerrado =
-    diaSemana === 0 ||
-    (diaSemana === 6 && minutos >= 14 * 60)
+  diaSemana === 0 ||
+  (diaSemana === 6 && minutos >= 14 * 60) ||
+  (diaSemana >= 1 && diaSemana <= 5 && minutos >= 22 * 60)
 
   if (edificioCerrado) return 'cerrado'
 

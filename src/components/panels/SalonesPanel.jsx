@@ -36,7 +36,10 @@ function estaDisponible(salon) {
     const ahora = new Date()
     const diaSemana = ahora.getDay()
     const minutos = ahora.getHours() * 60 + ahora.getMinutes()
-    const edificioCerrado = diaSemana === 0 || (diaSemana === 6 && minutos >= 14 * 60)
+    const edificioCerrado =
+  diaSemana === 0 ||
+  (diaSemana === 6 && minutos >= 14 * 60) ||
+  (diaSemana >= 1 && diaSemana <= 5 && minutos >= 22 * 60)
     return edificioCerrado ? 'cerrado' : true
   }
 
@@ -48,7 +51,10 @@ function estaDisponible(salon) {
   const ahora = new Date()
   const diaSemana = ahora.getDay()
   const minutos = ahora.getHours() * 60 + ahora.getMinutes()
-  const edificioCerrado = diaSemana === 0 || (diaSemana === 6 && minutos >= 14 * 60)
+  const edificioCerrado =
+  diaSemana === 0 ||
+  (diaSemana === 6 && minutos >= 14 * 60) ||
+  (diaSemana >= 1 && diaSemana <= 5 && minutos >= 22 * 60)
   if (edificioCerrado) return 'cerrado'
 
   const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
@@ -98,7 +104,9 @@ export default function SalonesPanel() {
     })
   }, [])
 
-  const tipos = ['todos', ...new Set(salones.map(s => s.tipo).filter(Boolean))]
+  const tipos = ['todos', ...new Set(
+  salones.flatMap(s => Array.isArray(s.tipo) ? s.tipo : [s.tipo]).filter(Boolean)
+)]
   const pisos = ['todos', ...new Set(salones.map(s => s.piso).filter(Boolean))]
 
   const filtrados = salones
@@ -109,7 +117,8 @@ export default function SalonesPanel() {
         !texto ||
         s.nombre?.toLowerCase().includes(texto) ||
         s.nomenclatura?.toLowerCase().includes(texto)
-      const coincideTipo = filtroTipo === 'todos' || s.tipo === filtroTipo
+      const coincideTipo = filtroTipo === 'todos' || 
+  (Array.isArray(s.tipo) ? s.tipo.includes(filtroTipo) : s.tipo === filtroTipo)
       const coincidePiso = filtroPiso === 'todos' || s.piso === filtroPiso
       return coincideTexto && coincideTipo && coincidePiso
     })
