@@ -26,6 +26,83 @@ function withAssetRevision(url) {
   return `${url}${sep}rev=${ASSET_REVISION}`
 }
 
+function warmModelCacheInBackground(urls) {
+  if (typeof window === 'undefined') return () => {}
+
+  const uniqueUrls = [...new Set(urls.filter(Boolean))]
+  if (uniqueUrls.length === 0) return () => {}
+
+  let cancelled = false
+
+  const runWarmup = async () => {
+    if (cancelled) return
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return
+
+    const delegateToServiceWorker = async () => {
+      if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false
+      try {
+        const registration = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise(resolve => {
+            window.setTimeout(() => resolve(null), 1500)
+          }),
+        ])
+        if (!registration?.active) return false
+        registration.active.postMessage({ type: 'WARM_MODEL_CACHE', urls: uniqueUrls })
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const delegated = await delegateToServiceWorker()
+    if (delegated || cancelled) return
+
+    await Promise.all(uniqueUrls.map(async url => {
+      try {
+        await fetch(url, {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'force-cache',
+        })
+      } catch {
+        // Ignore warm-up failures; normal model load flow will still fetch on demand.
+      }
+    }))
+  }
+
+  const schedule = () => {
+    if (typeof window.requestIdleCallback === 'function') {
+      return {
+        type: 'idle',
+        id: window.requestIdleCallback(() => {
+          void runWarmup()
+        }, { timeout: 5000 }),
+      }
+    }
+
+    return {
+      type: 'timeout',
+      id: window.setTimeout(() => {
+        void runWarmup()
+      }, 1200),
+    }
+  }
+
+  const handle = schedule()
+
+  return () => {
+    cancelled = true
+    if (handle.type === 'idle' && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(handle.id)
+      return
+    }
+    if (handle.type === 'timeout') {
+      window.clearTimeout(handle.id)
+    }
+  }
+}
+
 const C_HOVER    = new THREE.Color(0xff3b3b)
 const C_SELECTED = new THREE.Color(0xcc0000)
 const C_FOUND    = new THREE.Color(0xff9500)
@@ -1212,6 +1289,7 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
   const salonesMapRef = useRef(new Map())
   const salonesListRef = useRef([])
   const pendingSearchSelectionRef = useRef(null)
+  const modelCacheWarmStartedRef = useRef(false)
 
   const [activeModel,   setActiveModel]   = useState(0)
   const [loading,       setLoading]       = useState(true)
@@ -1223,6 +1301,26 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
   const [selectedStatus, setSelectedStatus] = useState(null)
   const [labelsEnabled, setLabelsEnabled] = useState(true)
   const [assetError, setAssetError] = useState('')
+
+  useEffect(() => {
+    if (modelCacheWarmStartedRef.current) return
+    modelCacheWarmStartedRef.current = true
+
+    // OPT: proactively cache heavy 3D assets when browser is idle for faster reloads.
+    const warmUrls = [
+      ...MODELS.flatMap(model => [
+        withAssetRevision(model.file),
+        withAssetRevision(model.nav),
+      ]),
+      '/draco/draco_decoder.js',
+      '/draco/draco_wasm_wrapper.js',
+      '/draco/draco_decoder.wasm',
+    ]
+
+    const cleanupWarmup = warmModelCacheInBackground(warmUrls)
+    return cleanupWarmup
+  }, [])
+
   const [salonesMap, setSalonesMap] = useState(new Map()) // nomenclatura -> salon
 
   useEffect(() => {
@@ -4302,7 +4400,6 @@ export default function ThreeViewer({ onPisoChange, onRouteVisibilityChange, onO
     const loadingManager = new THREE.LoadingManager()
     loadingManager.onStart = () => {
       updateLoadProgress({
-        phase: 'Descargando modelo',
         loaded: 0,
         total: 0,
       })
@@ -4545,7 +4642,6 @@ if (salonesMapRef.size > 0) {
       xhr => {
         if (stale) return
         updateLoadProgress({
-          phase: 'Descargando modelo',
           loaded: xhr?.loaded ?? 0,
           total: xhr?.total ?? 0,
         })
@@ -5350,28 +5446,6 @@ if (salonesMapRef.size > 0) {
               style={{ borderColor:'var(--color-border)', borderTopColor:'var(--color-primary)' }} />
             <p className="text-[13px] font-semibold" style={{ color:'var(--color-text)' }}>
               Cargando — {MODELS[activeModel].label}
-            </p>
-            <p className="text-[11px]" style={{ color:'var(--color-text-muted)' }}>
-              {loadProgress.phase}
-            </p>
-            <div
-              className="w-[min(360px,78vw)] h-2 rounded-full overflow-hidden"
-              style={{ background:'rgba(0,0,0,0.10)' }}
-            >
-              <div
-                className="h-full transition-all duration-200"
-                style={{
-                  // OPT: byte-aware progress feedback from XHR events/loading manager.
-                  width: `${Math.max(2, Math.min(100, loadProgress.percent))}%`,
-                  background: 'var(--color-primary)',
-                }}
-              />
-            </div>
-            <p className="text-[11px] tabular-nums" style={{ color:'var(--color-text-muted)' }}>
-              {Math.round(loadProgress.percent)}%
-              {loadProgress.total > 0
-                ? ` · ${formatProgressMB(loadProgress.loaded)} / ${formatProgressMB(loadProgress.total)}`
-                : (loadProgress.loaded > 0 ? ` · ${formatProgressMB(loadProgress.loaded)}` : '')}
             </p>
           </div>
         )}
