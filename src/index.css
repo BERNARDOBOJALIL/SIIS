@@ -69,6 +69,7 @@ body {
   left: 0;
   top: 0;
   will-change: transform;
+  opacity: 0;
   background: rgba(10, 10, 10, 0.76);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -88,7 +89,7 @@ body {
   user-select: none;
   pointer-events: auto;
   cursor: pointer;
-  transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  transition: opacity 0.09s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .room-label:hover {
   background: rgba(30, 30, 30, 0.9);
@@ -109,6 +110,30 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.room-label--dual {
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.room-label .label-text--dual {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.08;
+}
+
+.room-label .label-code {
+  display: block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  letter-spacing: 0.04em;
+}
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--label-accent); }
   50%      { opacity: 0.55; box-shadow: 0 0 10px var(--label-accent); }
@@ -123,7 +148,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 25;
-  pointer-events: none;
+  pointer-events: auto;
   animation: badge-enter 0.5s cubic-bezier(0.23, 1, 0.32, 1) both;
 }
 @keyframes badge-enter {
@@ -133,15 +158,16 @@ body {
 .selected-badge {
   --badge-accent: #94a3b8;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 12px;
   background: rgba(10, 10, 10, 0.78);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-radius: 14px;
-  padding: 10px 22px 10px 16px;
+  padding: 11px 14px 11px 14px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.06);
   border-left: 4px solid var(--badge-accent);
+  max-width: min(90vw, 580px);
 }
 .selected-badge-dot {
   width: 12px;
@@ -150,6 +176,13 @@ body {
   background: var(--badge-accent);
   box-shadow: 0 0 10px var(--badge-accent);
   flex-shrink: 0;
+  margin-top: 6px;
+}
+.selected-badge-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .selected-badge-name {
   font-family: 'Inter', system-ui, sans-serif;
@@ -158,6 +191,25 @@ body {
   letter-spacing: 0.01em;
   color: #fff;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.selected-badge-fullname {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(241,245,249,0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.selected-badge-side {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,0.12);
 }
 .selected-badge-status {
   font-family: 'Inter', system-ui, sans-serif;
@@ -166,8 +218,23 @@ body {
   text-transform: capitalize;
   color: var(--badge-accent);
   white-space: nowrap;
-  padding-left: 10px;
-  border-left: 1px solid rgba(255,255,255,0.12);
+}
+.selected-badge-action {
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.selected-badge-action:hover {
+  background: rgba(255,255,255,0.18);
+  border-color: rgba(255,255,255,0.35);
+  transform: translateY(-1px);
 }
 
 /* ============================================================
@@ -374,6 +441,122 @@ body {
   transform: translateX(-50%) scale(1.04);
 }
 
+/* ── Instructions panel ── */
+.nav-instructions-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 30;
+  max-width: 340px;
+  max-height: 60vh;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 16px;
+  box-shadow: 0 10px 26px rgba(16,24,40,0.16), 0 0 0 1px rgba(15,23,42,0.08);
+  overflow: hidden;
+  animation: nav-panel-in 0.35s cubic-bezier(0.23, 1, 0.32, 1) both;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+}
+.nav-instructions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 13px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+  border-bottom: 1px solid rgba(15,23,42,0.08);
+  background: linear-gradient(180deg, rgba(248,250,252,0.96), rgba(241,245,249,0.9));
+}
+.nav-instructions-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.nav-instructions-audio-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--color-primary);
+  border: 1px solid rgba(204,0,0,0.35);
+  border-radius: 8px;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.15s, filter 0.15s, box-shadow 0.15s;
+}
+.nav-instructions-audio-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 6px 14px rgba(204, 0, 0, 0.28);
+}
+.nav-instructions-list {
+  overflow-y: auto;
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: rgba(248,250,252,0.62);
+}
+.nav-instruction-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 11px;
+  background: #fff;
+  border-radius: 10px;
+  border-left: 3px solid var(--color-primary);
+  border: 1px solid rgba(15,23,42,0.07);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: #334155;
+  line-height: 1.4;
+}
+.nav-instruction-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: var(--color-primary);
+  color: #fff;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.nav-instruction-text {
+  flex: 1;
+  color: #1e293b;
+}
+
+.nav-instruction-text strong {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+/* ============================================================
+   HOME LAYOUT TRANSITIONS
+   ============================================================ */
+
+.home-panel {
+  transition: width 300ms ease, min-width 300ms ease, opacity 220ms ease;
+}
+
+.home-panel--collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  opacity: 0 !important;
+  border-left: 0 !important;
+}
+
 /* ============================================================
    RESPONSIVE  — all breakpoints + kiosk portrait
    ============================================================ */
@@ -402,6 +585,12 @@ body {
     flex: 0 0 auto !important;
     max-height: 38% !important;
     overflow: hidden !important;
+  }
+
+  .home-panel.home-panel--collapsed {
+    max-height: 0 !important;
+    width: 100% !important;
+    min-width: 100% !important;
   }
 
   /* Panel flows horizontally */
@@ -452,12 +641,27 @@ body {
   .selected-badge {
     padding: 12px 26px 12px 18px;
     border-radius: 16px;
+    gap: 10px;
   }
   .selected-badge-name {
     font-size: 18px;
   }
+  .selected-badge-fullname {
+    font-size: 11px;
+  }
+  .selected-badge-side {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
   .selected-badge-status {
     font-size: 12px;
+    border-left: 0;
+    padding-left: 0;
+  }
+  .selected-badge-action {
+    font-size: 10px;
+    padding: 3px 8px;
   }
 }
 
@@ -474,6 +678,21 @@ body {
   .btn-short { display: inline !important; }
   .viewer-toolbar { gap: 4px !important; padding: 4px 6px !important; }
   .toolbar-divider { display: none !important; }
+
+  .selected-badge {
+    max-width: calc(100vw - 14px);
+    padding: 10px 12px;
+  }
+  .selected-badge-main {
+    min-width: 0;
+  }
+  .selected-badge-name {
+    font-size: 15px;
+  }
+  .selected-badge-fullname {
+    max-width: 42vw;
+    font-size: 10px;
+  }
 }
 
 /* Very tall portrait (kiosk monitors ≥ 900px wide) */

@@ -1,34 +1,150 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { getSalones } from '../../services/firestoreService'
 import {
   School, CheckCircle2, XCircle, Clock3, CalendarDays,
-  MapPin, FlaskConical, Users, BookOpen, Settings,
-  Circle,
+  MapPin, FlaskConical, Users, BookOpen, Settings, Circle, ChevronLeft, ChevronRight,
 } from 'lucide-react'
-
-/* ── Datos de demo ── */
-const SALONES = [
-  { id: 'A-101', nombre: 'Aula 101',       tipo: 'aula',   disponible: true  },
-  { id: 'A-102', nombre: 'Aula 102',       tipo: 'aula',   disponible: false },
-  { id: 'A-103', nombre: 'Aula 103',       tipo: 'aula',   disponible: true  },
-  { id: 'A-104', nombre: 'Aula 104',       tipo: 'aula',   disponible: false },
-  { id: 'B-201', nombre: 'Lab. Cómputo',   tipo: 'lab',    disponible: true  },
-  { id: 'B-202', nombre: 'Lab. Física',    tipo: 'lab',    disponible: false },
-  { id: 'C-301', nombre: 'Sala Juntas',    tipo: 'sala',   disponible: true  },
-]
+import HorarioGrid from '../common/HorarioGrid'
 
 const LEYENDA = [
-  { color: '#22c55e', label: 'Disponible',     Icon: CheckCircle2 },
-  { color: '#ef4444', label: 'Ocupado',         Icon: XCircle      },
-  { color: '#3b82f6', label: 'Administrativo',  Icon: Settings     },
-  { color: '#f59e0b', label: 'Mantenimiento',   Icon: Settings     },
-  { color: '#8b5cf6', label: 'Evento',          Icon: Users        },
-  { color: '#94a3b8', label: 'Sin asignar',     Icon: Circle       },
+  { color: '#22c55e', label: 'Disponible',  Icon: CheckCircle2 },
+  { color: '#ef4444', label: 'Ocupado',     Icon: XCircle      },
+  { color: '#94a3b8', label: 'Cerrado',     Icon: XCircle      },
+  { color: '#f59e0b', label: 'Sin info',    Icon: Circle       },
 ]
 
 const TIPO_ICON = {
   aula:  BookOpen,
   lab:   FlaskConical,
   sala:  Users,
+}
+
+function normalizarDia(dia) {
+  return dia?.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim() ?? ''
+}
+
+function normalizeRefText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function splitReferenceTokens(value) {
+  return String(value ?? '')
+    .split('/')
+    .map(t => t.trim())
+    .filter(Boolean)
+}
+
+function scoreSalonMatch(salon, tokens) {
+  if (!salon || tokens.length === 0) return 0
+
+  const nom = normalizeRefText(salon.nomenclatura)
+  const name = normalizeRefText(salon.nombre)
+  let score = 0
+
+  tokens.forEach(token => {
+    if (!token) return
+    if (nom && nom === token) score += 10
+    else if (name && name === token) score += 8
+    else if (nom && (nom.includes(token) || token.includes(nom))) score += 6
+    else if (name && (name.includes(token) || token.includes(name))) score += 4
+  })
+
+  return score
+}
+
+function findSalonMatchesByReference(reference, salones) {
+  const tokens = splitReferenceTokens(reference)
+    .map(normalizeRefText)
+    .filter(Boolean)
+  if (tokens.length === 0 || !Array.isArray(salones) || salones.length === 0) return []
+
+  const scored = []
+  salones.forEach(salon => {
+    const score = scoreSalonMatch(salon, tokens)
+    if (score <= 0) return
+    scored.push({ salon, score })
+  })
+
+  if (scored.length === 0) return []
+
+  scored.sort((a, b) => b.score - a.score)
+  const bestScore = scored[0].score
+  const minScore = Math.max(4, bestScore - 4)
+
+  const unique = new Map()
+  scored.forEach(item => {
+    if (item.score < minScore) return
+    const key = String(item.salon?.id ?? item.salon?.nomenclatura ?? '')
+    if (!key || unique.has(key)) return
+    unique.set(key, item.salon)
+  })
+
+  return [...unique.values()]
+}
+
+function estaDisponible(salon) {
+if (!salon.tipoHorario) return null
+
+// Si es de clases pero no tiene horario → siempre disponible en horario del edificio
+if (salon.tipoHorario === 'clases' && (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0)) {
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+  const edificioCerrado =
+  diaSemana === 0 ||
+  (diaSemana === 6 && minutos >= 14 * 60) ||
+  (diaSemana >= 1 && diaSemana <= 5 && minutos >= 22 * 60)
+  return edificioCerrado ? 'cerrado' : true
+}
+
+if (!salon.horario || !Array.isArray(salon.horario) || salon.horario.length === 0) return null
+
+const bloques = salon.horario.filter(b => b && b.dia && b.inicio && b.fin)
+if (bloques.length === 0) return null
+
+  const ahora = new Date()
+  const diaSemana = ahora.getDay()
+  const minutos = ahora.getHours() * 60 + ahora.getMinutes()
+
+  const edificioCerrado =
+  diaSemana === 0 ||
+  (diaSemana === 6 && minutos >= 14 * 60) ||
+  (diaSemana >= 1 && diaSemana <= 5 && minutos >= 22 * 60)
+
+  if (edificioCerrado) return 'cerrado'
+
+  const dia = ahora.toLocaleDateString('es-MX', { weekday: 'long' }).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
+  if (salon.tipoHorario === 'operacion') {
+    const abierto = bloques.some(b => {
+      if (normalizarDia(b.dia) !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return abierto ? true : 'cerrado'
+  }
+
+  if (salon.tipoHorario === 'clases') {
+    const ocupado = bloques.some(b => {
+      if (normalizarDia(b.dia) !== dia) return false
+      const [hI, mI] = b.inicio.split(':').map(Number)
+      const [hF, mF] = b.fin.split(':').map(Number)
+      return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+    })
+    return ocupado ? false : true
+  }
+
+  return null
 }
 
 const DAYS   = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
@@ -41,14 +157,112 @@ function useDateTime() {
   return now
 }
 
-export default function RightPanel() {
-  const now   = useDateTime()
-  const hh    = String(now.getHours()).padStart(2,'0')
-  const mm    = String(now.getMinutes()).padStart(2,'0')
-  const ss    = String(now.getSeconds()).padStart(2,'0')
-  const day   = DAYS[now.getDay()]
-  const date  = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
-  const libres = SALONES.filter(s => s.disponible).length
+export default function RightPanel({ piso, openSalonDetailsRequest = null }) {
+  const now    = useDateTime()
+  const [salones,  setSalones]  = useState([])
+  const [loading,  setLoading]  = useState(true)
+  const [salonSelGroup, setSalonSelGroup] = useState([])
+  const [salonSelIndex, setSalonSelIndex] = useState(0)
+  const lastHandledOpenRequestRef = useRef(0)
+
+  const salonSel = salonSelGroup[salonSelIndex] ?? null
+
+  useEffect(() => {
+    getSalones().then(data => {
+      setSalones(data)
+      setLoading(false)
+    })
+  }, [])
+
+  const hh  = String(now.getHours()).padStart(2, '0')
+  const mm  = String(now.getMinutes()).padStart(2, '0')
+  const ss  = String(now.getSeconds()).padStart(2, '0')
+  const day = DAYS[now.getDay()]
+  const date = `${now.getDate()} de ${MONTHS[now.getMonth()]} de ${now.getFullYear()}`
+
+  const salonesConDisp = useMemo(() => (
+    salones
+      .filter(s => !piso || s.piso === piso)
+      .map(s => ({ ...s, disp: estaDisponible(s) }))
+  ), [salones, piso, now])
+  const libres = salonesConDisp.filter(s => s.disp === true).length
+
+  function closeSalonDetails() {
+    setSalonSelGroup([])
+    setSalonSelIndex(0)
+  }
+
+  function openSalonDetailsGroup(group, preferredId = null) {
+    const base = Array.isArray(group) ? group.filter(Boolean) : []
+    if (base.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    const uniqueMap = new Map()
+    base.forEach(item => {
+      const key = String(item?.id ?? item?.nomenclatura ?? '')
+      if (!key || uniqueMap.has(key)) return
+      uniqueMap.set(key, item)
+    })
+    const unique = [...uniqueMap.values()]
+    if (unique.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    let nextIndex = 0
+    if (preferredId != null) {
+      const idx = unique.findIndex(item => String(item?.id) === String(preferredId))
+      if (idx >= 0) nextIndex = idx
+    }
+
+    setSalonSelGroup(unique)
+    setSalonSelIndex(nextIndex)
+  }
+
+  function moveSalonDetails(step) {
+    if (!salonSelGroup.length) return
+    setSalonSelIndex(prev => {
+      const next = prev + step
+      if (next < 0) return salonSelGroup.length - 1
+      if (next >= salonSelGroup.length) return 0
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (!openSalonDetailsRequest?.name || salonesConDisp.length === 0) return
+    const requestStamp = Number(openSalonDetailsRequest?.stamp ?? 0)
+    if (requestStamp && requestStamp === lastHandledOpenRequestRef.current) return
+
+    const matches = findSalonMatchesByReference(openSalonDetailsRequest.name, salonesConDisp)
+    if (matches.length > 0) {
+      openSalonDetailsGroup(matches, openSalonDetailsRequest?.salonId ?? null)
+      if (requestStamp) lastHandledOpenRequestRef.current = requestStamp
+    }
+  }, [openSalonDetailsRequest, salonesConDisp])
+
+  useEffect(() => {
+    if (salonSelGroup.length === 0) return
+
+    const refreshed = salonSelGroup
+      .map(item => salonesConDisp.find(s => String(s?.id) === String(item?.id)))
+      .filter(Boolean)
+
+    if (refreshed.length === 0) {
+      closeSalonDetails()
+      return
+    }
+
+    const currentId = salonSel?.id
+    let nextIndex = refreshed.findIndex(item => String(item?.id) === String(currentId))
+    if (nextIndex < 0) nextIndex = 0
+
+    setSalonSelGroup(refreshed)
+    setSalonSelIndex(nextIndex)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salonesConDisp])
 
   return (
     <aside
@@ -67,13 +281,13 @@ export default function RightPanel() {
         }}
       >
         <img
-          src="/logo_idit.png"
-          alt="IDIT"
+          src="/Logo_proyecto.svg"
+          alt="SIIS"
           className="h-14 w-auto object-contain"
         />
         <p className="text-[10px] uppercase tracking-widest font-semibold text-center"
           style={{ color: 'var(--color-text-muted)' }}>
-          Sistema de Información
+          Sistema de Información y Servicios
         </p>
 
         {/* Reloj */}
@@ -117,7 +331,7 @@ export default function RightPanel() {
             className="text-[11px] font-bold px-2 py-0.5 rounded-full"
             style={{ background: 'var(--color-primary)', color: '#fff' }}
           >
-            {libres}/{SALONES.length}
+            {libres}/{salonesConDisp.length}
           </span>
         </div>
 
@@ -127,7 +341,7 @@ export default function RightPanel() {
           <div
             className="h-full rounded-full transition-all duration-700"
             style={{
-              width:      `${Math.round((libres/SALONES.length)*100)}%`,
+              width: `${Math.round((libres / salonesConDisp.length) * 100)}%`,
               background: 'var(--color-primary)',
             }}
           />
@@ -135,36 +349,52 @@ export default function RightPanel() {
 
         {/* Lista de salones */}
         <div className="room-list flex flex-col gap-1.5 overflow-y-auto min-h-0">
-          {SALONES.map(salon => {
-            const TipoIcon = TIPO_ICON[salon.tipo] || BookOpen
-            return (
-              <div
-                key={salon.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-default"
-                style={{
-                    
-                  border:     `1px solid ${salon.disponible ? '#bbf7d0' : '#fecdd3'}`,
-                }}
-              >
-                <TipoIcon size={13}
-                  style={{ color: salon.disponible ? '#16a34a' : '#dc2626', flexShrink: 0 }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[12px] font-semibold leading-tight truncate"
-                    style={{ color: 'var(--color-text)' }}>
-                    {salon.nombre}
-                  </p>
-                  <p className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
-                    {salon.id}
-                  </p>
-                </div>
-                {salon.disponible
-                  ? <CheckCircle2 size={14} style={{ color:'#16a34a', flexShrink:0 }} />
-                  : <XCircle      size={14} style={{ color:'#dc2626', flexShrink:0 }} />
-                }
-              </div>
-            )
-          })}
+  {loading ? (
+    <p className="text-[12px] text-center py-4" style={{ color: 'var(--color-text-muted)' }}>
+      Cargando salones...
+    </p>
+  ) : (
+    salonesConDisp.map(salon => {
+      const TipoIcon = TIPO_ICON[salon.tipo] || BookOpen
+      const disponible = salon.disp
+      return (
+        <div
+          key={salon.id}
+          onClick={() => openSalonDetailsGroup([salon], salon.id)}
+          className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-pointer hover:opacity-80"
+          style={{
+            border: `1px solid ${
+  disponible === true     ? '#bbf7d0' :
+  disponible === false    ? '#fecdd3' :
+  disponible === 'cerrado'? '#e2e8f0' :
+  disponible === null     ? '#fed7aa' : 'var(--color-border)'
+}`,
+          }}
+        >
+          <TipoIcon size={13} style={{
+            color: disponible === true  ? '#16a34a' :
+       disponible === false ? '#dc2626' :
+       disponible === null  ? '#f59e0b' : '#94a3b8',
+            flexShrink: 0
+          }} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-semibold leading-tight truncate"
+              style={{ color: 'var(--color-text)' }}>
+              {salon.nombre}
+            </p>
+            <p className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
+              {salon.nomenclatura} · {salon.piso}
+            </p>
+          </div>
+          {disponible === true     && <CheckCircle2 size={14} style={{ color: '#16a34a', flexShrink: 0 }} />}
+{disponible === false    && <XCircle      size={14} style={{ color: '#dc2626', flexShrink: 0 }} />}
+{disponible === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />}
+{disponible === null     && <Circle       size={14} style={{ color: '#f59e0b', flexShrink: 0 }} />}
         </div>
+      )
+    })
+  )}
+</div>
       </section>
 
       {/* Divisor */}
@@ -203,6 +433,164 @@ export default function RightPanel() {
           </span>
         </div>
       </section>
+      {/* ── Detalle de salón ───────────────────────────── */}
+{salonSel && (
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style={{ background: 'rgba(0,0,0,0.4)' }}
+    onClick={closeSalonDetails}
+  >
+    <div
+      className="w-full max-w-sm rounded-2xl p-5 flex flex-col gap-3 overflow-y-auto max-h-[80vh]"
+      style={{ background: 'var(--color-site-white)', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}
+      onClick={e => e.stopPropagation()}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--color-primary)' }}>
+            {salonSel.nomenclatura ?? '—'} · {salonSel.piso ?? '—'}
+          </p>
+          <h3 className="text-[16px] font-bold leading-tight"
+            style={{ color: 'var(--color-site-black)' }}>
+            {salonSel.nombre ?? salonSel.nomenclatura ?? '—'}
+          </h3>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {salonSelGroup.length > 1 && (
+            <>
+              <button
+                onClick={() => moveSalonDetails(-1)}
+                className="p-1 rounded-md"
+                title="Ver salón anterior"
+                style={{ color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span
+                className="text-[11px] font-semibold px-1"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {salonSelIndex + 1}/{salonSelGroup.length}
+              </span>
+              <button
+                onClick={() => moveSalonDetails(1)}
+                className="p-1 rounded-md"
+                title="Ver siguiente salón"
+                style={{ color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </>
+          )}
+          <button
+            onClick={closeSalonDetails}
+            className="text-[20px] leading-none font-light"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {salonSelGroup.length > 1 && (
+        <div
+          className="flex items-center justify-between rounded-lg px-3 py-2"
+          style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}
+        >
+          <p className="text-[11px] font-semibold" style={{ color: 'var(--color-text)' }}>
+            Este bloque incluye {salonSelGroup.length} salones. Usa los botones para cambiar.
+          </p>
+        </div>
+      )}
+
+      {/* Disponibilidad */}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+        style={{ background:
+  salonSel.disp === true     ? '#f0fdf4' :
+  salonSel.disp === false    ? '#fef2f2' :
+  salonSel.disp === 'cerrado'? '#f8fafc' : '#fff7ed'
+}}>
+        {salonSel.disp === true     && <CheckCircle2 size={14} style={{ color: '#16a34a' }} />}
+        {salonSel.disp === false    && <XCircle      size={14} style={{ color: '#dc2626' }} />}
+        {salonSel.disp === 'cerrado'&& <XCircle      size={14} style={{ color: '#94a3b8' }} />}
+        {salonSel.disp === null     && <Circle       size={14} style={{ color: '#f59e0b' }} />}
+        <span className="text-[12px] font-semibold" style={{ color:
+  salonSel.disp === true     ? '#16a34a' :
+  salonSel.disp === false    ? '#dc2626' :
+  salonSel.disp === 'cerrado'? '#94a3b8' : '#f59e0b'
+}}>
+          {salonSel.disp === true     ? 'Disponible ahora' :
+           salonSel.disp === false    ? 'Ocupado ahora'    :
+           salonSel.disp === 'cerrado'? 'Cerrado'          : 'Sin información'}
+        </span>
+      </div>
+
+      {/* Equipamiento */}
+      {Array.isArray(salonSel.equipamiento) && salonSel.equipamiento.filter(Boolean).length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+            style={{ color: 'var(--color-text-muted)' }}>Equipamiento</p>
+          <div className="flex flex-wrap gap-1.5">
+            {salonSel.equipamiento.filter(Boolean).map((eq, i) => (
+              <span key={i} className="text-[11px] px-2 py-0.5 rounded-full"
+                style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}>
+                {eq}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Responsables */}
+      {Array.isArray(salonSel.responsables) && salonSel.responsables.filter(r => r?.nombre).length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+            style={{ color: 'var(--color-text-muted)' }}>Responsable(s)</p>
+          {salonSel.responsables.filter(r => r?.nombre).map((r, i) => (
+            <div key={i} className="text-[12px]" style={{ color: 'var(--color-text)' }}>
+              <span className="font-semibold">{r.nombre}</span>
+              {r.cargo && <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}> · {r.cargo}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Horario */}
+{salonSel.tipoHorario && (
+  <div>
+    <p className="text-[11px] font-bold uppercase tracking-wider mb-1.5"
+      style={{ color: 'var(--color-text-muted)' }}>
+      {salonSel.tipoHorario === 'operacion' ? 'Horario de operación' : 'Horario de clases'}
+    </p>
+    {salonSel.tipoHorario === 'clases' ? (
+      <HorarioGrid horario={salonSel.horario ?? []} />
+    ) : (
+      <div className="flex flex-col gap-1">
+        {(salonSel.horario ?? []).filter(b => b?.dia).map((b, i) => (
+          <div key={i} className="flex items-center justify-between text-[12px] px-2 py-1 rounded-lg"
+            style={{ background: 'var(--color-bg)' }}>
+            <span className="capitalize font-medium" style={{ color: 'var(--color-text)' }}>{b.dia}</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>{b.inicio} – {b.fin}</span>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+)}
+
+      {/* Reserva */}
+      {salonSel.reserva === true && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+          style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
+          <CalendarDays size={13} style={{ color: 'var(--color-primary)' }} />
+          <span className="text-[12px]" style={{ color: 'var(--color-text)' }}>Este espacio permite reservas</span>
+        </div>
+      )}
+    </div>
+  </div>
+)}
     </aside>
   )
 }

@@ -4,6 +4,9 @@ import { MainLayout } from '../components/layout'
 import HomePage from '../pages/HomePage'
 import AppointmentsPage from '../pages/AppointmentsPage'
 import NotFoundPage from '../pages/NotFoundPage'
+import SalonesPanel from '../components/panels/SalonesPanel'
+import PersonalPanel from '../components/panels/PersonalPanel'
+import MaquinasPanel from '../components/panels/MaquinasPanel'
 
 export default function AppRouter() {
   return (
@@ -12,6 +15,9 @@ export default function AppRouter() {
         <Route element={<MainLayout />}>
           <Route path={ROUTES.HOME} element={<HomePage />} />
           <Route path={ROUTES.APPOINTMENTS} element={<AppointmentsPage />} />
+          <Route path={ROUTES.SALONES} element={<SalonesPanel />} />
+          <Route path={ROUTES.PERSONAL} element={<PersonalPanel />} />
+          <Route path={ROUTES.MAQUINAS} element={<MaquinasPanel />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Routes>

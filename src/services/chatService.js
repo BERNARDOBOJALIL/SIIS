@@ -29,15 +29,23 @@ async function request(endpoint, options = {}) {
  * Enviar un mensaje al agente y obtener respuesta
  * @param {string} prompt - El mensaje del usuario
  * @param {string} sessionId - ID de la sesión (por defecto "default")
+ * @param {string} frontendContext - Contexto opcional generado en el frontend (mapa/salones)
  * @returns {Promise<{response: string, session_id: string}>}
  */
-export async function sendMessage(prompt, sessionId = 'default') {
+export async function sendMessage(prompt, sessionId = 'default', frontendContext = '') {
+  const payload = {
+    prompt,
+    session_id: sessionId,
+  }
+
+  const compactContext = String(frontendContext || '').trim()
+  if (compactContext) {
+    payload.frontend_context = compactContext
+  }
+
   return request('/chat', {
     method: 'POST',
-    body: JSON.stringify({
-      prompt,
-      session_id: sessionId,
-    }),
+    body: JSON.stringify(payload),
   })
 }
 

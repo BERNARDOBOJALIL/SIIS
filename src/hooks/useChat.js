@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { chatService } from '../services/chatService'
+import { getSalones } from '../services/firestoreService'
+import { buildAutoRouteRequest, buildFrontendChatContext, SIIS_CHAT_EVENT_NAMES } from '../utils'
 
 /**
  * Hook personalizado para manejar la lógica del chat
@@ -9,6 +11,9 @@ export function useChat() {
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const salonesCacheRef = useRef([])
+  const salonesLoadedAtRef = useRef(0)
+  const salonesLoadingRef = useRef(false)
   const [sessionId] = useState(() => {
     // Generar una sesión única o usar la del localStorage
     const saved = localStorage.getItem('chatSessionId')
@@ -18,11 +23,40 @@ export function useChat() {
     return newSessionId
   })
 
+  const warmSalonesCache = useCallback(async (forceRefresh = false) => {
+    const cacheAgeMs = Date.now() - salonesLoadedAtRef.current
+    const cacheIsFresh = salonesCacheRef.current.length > 0 && cacheAgeMs < 5 * 60 * 1000
+    if (!forceRefresh && cacheIsFresh) {
+      return salonesCacheRef.current
+    }
+
+    if (salonesLoadingRef.current) {
+      return salonesCacheRef.current
+    }
+
+    salonesLoadingRef.current = true
+    try {
+      const salones = await getSalones()
+      if (Array.isArray(salones) && salones.length > 0) {
+        salonesCacheRef.current = salones
+        salonesLoadedAtRef.current = Date.now()
+      }
+    } catch (err) {
+      console.warn('No se pudo actualizar cache de salones para contexto de chat:', err?.message || err)
+    } finally {
+      salonesLoadingRef.current = false
+    }
+
+    return salonesCacheRef.current
+  }, [])
+
   // Verificar que el API está disponible al montar el componente
   useEffect(() => {
     chatService.checkHealth()
       .catch(err => console.warn('Chat API no disponible:', err.message))
-  }, [])
+
+    warmSalonesCache()
+  }, [warmSalonesCache])
 
   /**
    * Enviar un mensaje y obtener respuesta del agente
@@ -43,8 +77,21 @@ export function useChat() {
     setMessages(prev => [...prev, userMessage])
 
     try {
+      const salones = await warmSalonesCache()
+      const autoRouteRequest = buildAutoRouteRequest({ prompt, salones })
+      if (autoRouteRequest?.enabled && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(SIIS_CHAT_EVENT_NAMES.autoRouteRequest, {
+          detail: autoRouteRequest,
+        }))
+      }
+
+      const frontendContext = buildFrontendChatContext({
+        prompt,
+        salones,
+      })
+
       // Enviar al API
-      const response = await chatService.sendMessage(prompt, sessionId)
+      const response = await chatService.sendMessage(prompt, sessionId, frontendContext)
 
       // Agregar la respuesta del agente
       const agentMessage = {
@@ -67,7 +114,7 @@ export function useChat() {
     } finally {
       setLoading(false)
     }
-  }, [sessionId])
+  }, [sessionId, warmSalonesCache])
 
   /**
    * Resetear la sesión y limpiar el historial
