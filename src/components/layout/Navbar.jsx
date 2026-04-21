@@ -6,8 +6,8 @@ import { useChatContext } from './MainLayout'
 import { ROUTES } from '../../constants'
 import { Button, Input, Modal } from '../common'
 import {
-  Menu, X, Home, Lock, Calendar, MessageCircle,
-  Wind, Thermometer, CloudOff, Loader2, School, Users
+  Menu, X, Home, Lock, Calendar, MessageCircle, Factory,
+  Wind, Thermometer, CloudOff, Loader2, School
 } from 'lucide-react'
 
 export default function Navbar() {
@@ -179,10 +179,11 @@ export default function Navbar() {
             </p>
 
             {[
-              { label: 'Inicio',   path: '/',        Icon: Home,   active: true },
-{ label: 'Salones',  path: '/salones', Icon: School, active: true },
-{ label: 'Personal', path: '/personal', Icon: Users, active: true },
-{ label: 'Próximamente…', path: '#',  Icon: Lock,   active: false },
+              { label: 'Inicio',   path: ROUTES.HOME,     Icon: Home,    active: true },
+{ label: 'Salones',  path: ROUTES.SALONES,  Icon: School,  active: true },
+{ label: 'Personal', path: ROUTES.PERSONAL, Icon: Users,   active: true },
+{ label: 'Máquinas', path: ROUTES.MAQUINAS, Icon: Factory, active: true },
+{ label: 'Próximamente…', path: '#',        Icon: Lock,    active: false },
             ].map(({ label, path, Icon, active }) => (
               <Link
                 key={path}

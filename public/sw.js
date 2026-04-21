@@ -36,6 +36,35 @@ async function cacheFirst(request) {
   return response
 }
 
+async function warmModelCache(urls = []) {
+  const cache = await caches.open(MODEL_CACHE)
+
+  await Promise.all(urls.map(async rawUrl => {
+    try {
+      const url = new URL(rawUrl, self.location.origin)
+      if (!isModelAsset(url)) return
+
+      const request = new Request(url.href, { method: 'GET' })
+      const cached = await cache.match(request)
+      if (cached) return
+
+      const response = await fetch(request)
+      if (response && response.ok) {
+        await cache.put(request, response.clone())
+      }
+    } catch {
+      // Ignore warm-up failures; runtime cache-first still handles later requests.
+    }
+  }))
+}
+
+self.addEventListener('message', event => {
+  const data = event.data
+  if (!data || data.type !== 'WARM_MODEL_CACHE' || !Array.isArray(data.urls)) return
+
+  event.waitUntil(warmModelCache(data.urls))
+})
+
 self.addEventListener('fetch', event => {
   const { request } = event
   if (request.method !== 'GET') return
