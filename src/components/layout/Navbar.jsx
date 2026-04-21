@@ -7,7 +7,7 @@ import { ROUTES } from '../../constants'
 import { Button, Input, Modal } from '../common'
 import {
   Menu, X, Home, Lock, Calendar, MessageCircle,
-  Wind, Thermometer, CloudOff, Loader2, School
+  Wind, Thermometer, CloudOff, Loader2, School, Users
 } from 'lucide-react'
 
 export default function Navbar() {
@@ -181,6 +181,7 @@ export default function Navbar() {
             {[
               { label: 'Inicio',   path: '/',        Icon: Home,   active: true },
 { label: 'Salones',  path: '/salones', Icon: School, active: true },
+{ label: 'Personal', path: '/personal', Icon: Users, active: true },
 { label: 'Próximamente…', path: '#',  Icon: Lock,   active: false },
             ].map(({ label, path, Icon, active }) => (
               <Link

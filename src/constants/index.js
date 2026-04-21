@@ -7,6 +7,7 @@ export const ROUTES = {
   APPOINTMENTS: '/citas',
   SALONES: '/salones',
   LOGIN: '/login',
+  PERSONAL: '/personal',
 }
 
 // Claves de localStorage

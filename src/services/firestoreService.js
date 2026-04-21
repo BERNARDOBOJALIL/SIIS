@@ -725,3 +725,39 @@ export async function getSalonesByConjunto(idConjunto) {
     return []
   }
 }
+
+/**
+ * Obtiene todo el personal académico y administrativo
+ * @returns {Promise<Array>}
+ */
+export async function getPersonal() {
+  try {
+    const usuariosRef = collection(db, 'usuarios')
+    const q = query(usuariosRef, where('rol', '==', 'ACADEMICO'))
+    const snapshot = await getDocs(q)
+    return snapshot.docs.map(doc => ({
+      uid: doc.id,
+      ...doc.data(),
+    }))
+  } catch (error) {
+    console.error('Error fetching personal:', error)
+    return []
+  }
+}
+
+/**
+ * Obtiene el horario completo de un académico incluyendo disponibilidad
+ * @param {string} uid
+ * @returns {Promise<Object|null>}
+ */
+export async function getHorarioPersonal(uid) {
+  try {
+    const horarioRef = doc(db, 'horarios', uid)
+    const snapshot = await getDoc(horarioRef)
+    if (!snapshot.exists()) return null
+    return { uid, ...snapshot.data() }
+  } catch (error) {
+    console.error('Error fetching horario personal:', error)
+    return null
+  }
+}
