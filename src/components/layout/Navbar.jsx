@@ -6,7 +6,7 @@ import { useChatContext } from './MainLayout'
 import { ROUTES } from '../../constants'
 import { Button, Input, Modal } from '../common'
 import {
-  Menu, X, Home, Lock, Calendar, MessageCircle, Factory,
+  Menu, X, Home, Lock, Calendar, MessageCircle, Factory, Users,
   Wind, Thermometer, CloudOff, Loader2, School
 } from 'lucide-react'
 
