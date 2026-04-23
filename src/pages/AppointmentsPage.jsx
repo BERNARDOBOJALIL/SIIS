@@ -36,6 +36,7 @@ import {
   createOneTimeSlot,
   deleteWeekSlot,
   getAcademicoWeekCitas,
+  getHorarioPersonal,
 } from '../services/firestoreService'
 
 export default function AppointmentsPage() {
@@ -163,6 +164,7 @@ function StudentAppointmentsView({ estudianteId }) {
   const [weekStart] = useState(() => startOfWeek(new Date()))
   const [academicoSearch, setAcademicoSearch] = useState('')
   const [showCalendarHelp, setShowCalendarHelp] = useState(false)
+  const [horarioClasesAcademico, setHorarioClasesAcademico] = useState(null)
 
   useEffect(() => {
     loadAcademicos()
@@ -191,18 +193,22 @@ function StudentAppointmentsView({ estudianteId }) {
   }
 
   const handleSelectAcademico = async (academico) => {
-    setLoading(true)
-    setError('')
-    try {
-      setSelectedAcademico(academico)
-      await refreshCalendarData(academico.uid)
-      setStep('calendar')
-    } catch (err) {
-      setError('Error al cargar calendario de disponibilidad')
-    } finally {
-      setLoading(false)
-    }
+  setLoading(true)
+  setError('')
+  try {
+    setSelectedAcademico(academico)
+    const [_, horarioData] = await Promise.all([
+      refreshCalendarData(academico.uid),
+      getHorarioPersonal(academico.uid),
+    ])
+    setHorarioClasesAcademico(horarioData)
+    setStep('calendar')
+  } catch (err) {
+    setError('Error al cargar calendario de disponibilidad')
+  } finally {
+    setLoading(false)
   }
+}
 
   const handleSelectSlot = (slot) => {
     setSelectedSlot(slot)
@@ -541,6 +547,7 @@ function StudentAppointmentsView({ estudianteId }) {
             onSelectSlot={handleSelectSlot}
             loading={loading}
             hasSlots={weekSlots.length > 0}
+            horarioClases={horarioClasesAcademico}
           />
         </div>
       )}
@@ -639,6 +646,7 @@ function AcademicAppointmentsView({ academicoId }) {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [drag, setDrag] = useState(null)
+  const [horarioClases, setHorarioClases] = useState(null)
 
   const clearMessages = () => {
     setError('')
@@ -666,6 +674,9 @@ function AcademicAppointmentsView({ academicoId }) {
 
       try {
         const horarioData = await getHorariosBase(academicoId)
+const horarioClasesData = await getHorarioPersonal(academicoId)
+console.log('horarioClasesData:', horarioClasesData)
+setHorarioClases(horarioClasesData)
         const normalized = {
           ...getEmptyHorarios(),
           ...horarioData,
@@ -761,8 +772,34 @@ function AcademicAppointmentsView({ academicoId }) {
       }
     })
 
+    console.log('horarioClases:', horarioClases)
+console.log('DAYS:', DAYS)
+
+    if (horarioClases) {
+  const DIAS_KEY = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']
+  DAYS.forEach((day, dayIndex) => {
+    const clases = horarioClases[DIAS_KEY[dayIndex]] ?? []
+    clases.forEach(clase => {
+      if (!clase?.inicio || !clase?.fin) return
+      const [hI, mI] = clase.inicio.split(':').map(Number)
+      const [hF, mF] = clase.fin.split(':').map(Number)
+      const inicioMin = hI * 60 + mI
+      const finMin = hF * 60 + mF
+      const startIdx = Math.max(0, Math.floor((inicioMin - START_MINUTES) / BLOCK_MINUTES))
+      const endIdx = Math.min(TIME_BLOCKS.length, Math.ceil((finMin - START_MINUTES) / BLOCK_MINUTES))
+      for (let idx = startIdx; idx < endIdx; idx++) {
+        const key = `${dayIndex}-${idx}`
+        const current = map.get(key) || { slotIds: new Set(), citaStatuses: new Set(), citaStartLabels: [] }
+        current.tieneClase = true
+        current.nombreClase = clase.clase ?? 'Clase'
+        current.salonClase = clase.salon ?? null
+        map.set(key, current)
+      }
+    })
+  })
+}
     return map
-  }, [weekSlots, weekCitas])
+  }, [weekSlots, weekCitas, horarioClases])
 
   const handleStartDrag = (context, dayIndex, blockIndex) => {
     if (loadingDashboard || savingBase) return
@@ -888,7 +925,7 @@ function AcademicAppointmentsView({ academicoId }) {
     clearMessages()
     try {
       await saveHorariosBase(academicoId, horariosDraft)
-      const syncResult = await syncWeeklySlotsFromBase(academicoId, weekStart)
+      const syncResult = await syncWeeklySlotsFromBase(academicoId, weekStart, horarioClases)
       await refreshWeekData()
       setSuccess(`Horario base actualizado. Semana sincronizada: ${syncResult.created} bloque(s) creados, ${syncResult.deleted} bloque(s) eliminados.`)
       setMode('weekly')

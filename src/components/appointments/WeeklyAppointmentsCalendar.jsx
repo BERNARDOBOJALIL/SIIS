@@ -90,8 +90,8 @@ export default function WeeklyAppointmentsCalendar({
 
                 if (mode === 'setup') {
                   const isActive = setupSelectionMap[day.key]?.has(blockIndex)
-                  const setupBackground = isActive ? 'rgba(16, 185, 129, 0.72)' : 'rgba(255, 255, 255, 1)'
-                  const setupHoverBackground = isActive ? 'rgba(5, 150, 105, 0.8)' : 'rgba(16, 185, 129, 0.12)'
+                  const setupBackground = isActive ? 'rgba(239, 68, 68, 0.72)' : 'rgba(255, 255, 255, 1)'
+const setupHoverBackground = isActive ? 'rgba(220, 38, 38, 0.8)' : 'rgba(239, 68, 68, 0.12)'
                   return (
                     <button
                       key={`${day.key}-${blockMinutes}`}
@@ -119,50 +119,84 @@ export default function WeeklyAppointmentsCalendar({
                 const isEditable = mode === 'weekly' && weeklyEditMode
 
                 let baseColor = 'bg-white'
-                if (isConfirmada) {
-                  baseColor = 'bg-emerald-500/75'
-                } else if (isPendiente) {
-                  baseColor = 'bg-amber-400/80'
-                } else if (hasSlot) {
-                  baseColor = 'bg-emerald-100/90'
-                } else if (isEditable) {
-                  baseColor = 'bg-white hover:bg-primary/10'
-                }
+if (cell?.tieneClase) {
+  baseColor = 'bg-red-400/80'
+} else if (isConfirmada) {
+  baseColor = 'bg-emerald-500/75'
+} else if (isPendiente) {
+  baseColor = 'bg-amber-400/80'
+} else if (hasSlot) {
+  baseColor = 'bg-emerald-100/90'
+} else if (isEditable) {
+  baseColor = 'bg-white hover:bg-primary/10'
+}
 
                 const sharedClass = `h-8 border-l border-site-border/60 transition-colors ${baseColor} ${inDragRange ? 'ring-1 ring-emerald-300' : ''}`
 
                 if (!isEditable) {
-                  return (
-                    <div
-                      key={`${day.key}-${blockMinutes}`}
-                      title={isConfirmada ? 'Cita CONFIRMADA' : isPendiente ? 'Cita PENDIENTE' : hasSlot ? 'Slot disponible' : 'Sin slot'}
-                      className={`${sharedClass} relative overflow-hidden px-1`}
-                    >
-                      {citaLabels.length > 0 && (
-                        <div className="absolute inset-0 flex flex-col justify-center gap-0.5 py-0.5">
-                          {citaLabels.slice(0, 2).map((label, labelIndex) => (
-                            <div
-                              key={`${label.text}-${labelIndex}`}
-                              className={`text-[9px] leading-none font-semibold truncate px-1 py-0.5 rounded flex items-center justify-between gap-1 ${label.isPast ? 'bg-slate-700 text-white' : label.estado === 'CONFIRMADA' ? 'bg-blue-700 text-white' : 'bg-amber-700 text-white'}`}
-                            >
-                              <span className="truncate">{label.text}</span>
-                              {label.estado === 'PENDIENTE' && !label.isPast && (
-                                <button
-                                  type="button"
-                                  onClick={() => onQuickApprove(label.citaId, label.estudianteId)}
-                                  disabled={processingId === label.citaId}
-                                  className="text-[8px] px-1 py-0.5 rounded bg-white/90 text-amber-800 hover:bg-white disabled:opacity-60"
-                                >
-                                  {processingId === label.citaId ? '...' : 'Aprobar'}
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )
-                }
+  return (
+    <div
+      key={`${day.key}-${blockMinutes}`}
+      className={`${sharedClass} relative px-1`}
+    >
+      {cell?.tieneClase && (cell.nombreClase || cell.salonClase) && (
+        <div
+          className="absolute inset-0"
+          onMouseEnter={e => {
+            const tip = e.currentTarget.querySelector('.tip')
+            if (tip) tip.style.display = 'block'
+          }}
+          onMouseLeave={e => {
+            const tip = e.currentTarget.querySelector('.tip')
+            if (tip) tip.style.display = 'none'
+          }}
+        >
+          <div className="tip" style={{
+            display: 'none',
+            position: 'absolute',
+            bottom: '100%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#111827',
+            color: '#fff',
+            fontSize: '11px',
+            padding: '4px 8px',
+            borderRadius: '6px',
+            whiteSpace: 'nowrap',
+            zIndex: 100,
+            pointerEvents: 'none',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+          }}>
+            {cell.nombreClase && <div style={{ fontWeight: 600 }}>{cell.nombreClase}</div>}
+            {cell.salonClase && <div style={{ opacity: 0.8 }}>Salón: {cell.salonClase}</div>}
+          </div>
+        </div>
+      )}
+      {citaLabels.length > 0 && (
+        <div className="absolute inset-0 flex flex-col justify-center gap-0.5 py-0.5">
+          {citaLabels.slice(0, 2).map((label, labelIndex) => (
+            <div
+              key={`${label.text}-${labelIndex}`}
+              className={`text-[9px] leading-none font-semibold truncate px-1 py-0.5 rounded flex items-center justify-between gap-1 ${label.isPast ? 'bg-slate-700 text-white' : label.estado === 'CONFIRMADA' ? 'bg-blue-700 text-white' : 'bg-amber-700 text-white'}`}
+            >
+              <span className="truncate">{label.text}</span>
+              {label.estado === 'PENDIENTE' && !label.isPast && (
+                <button
+                  type="button"
+                  onClick={() => onQuickApprove(label.citaId, label.estudianteId)}
+                  disabled={processingId === label.citaId}
+                  className="text-[8px] px-1 py-0.5 rounded bg-white/90 text-amber-800 hover:bg-white disabled:opacity-60"
+                >
+                  {processingId === label.citaId ? '...' : 'Aprobar'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
                 return (
                   <button
@@ -171,7 +205,7 @@ export default function WeeklyAppointmentsCalendar({
                     onMouseDown={() => onStartDrag('weekly', dayIndex, blockIndex)}
                     onMouseEnter={() => onMoveDrag(dayIndex, blockIndex)}
                     onMouseUp={onFinishDrag}
-                    title={isConfirmada ? 'Cita CONFIRMADA' : isPendiente ? 'Cita PENDIENTE' : 'Sin cita'}
+                    title={cell?.tieneClase ? cell.nombreClase : isConfirmada ? 'Cita CONFIRMADA' : isPendiente ? 'Cita PENDIENTE' : 'Sin cita'}
                     className={`${sharedClass} relative overflow-hidden px-1`}
                   >
                     {citaLabels.length > 0 && (
@@ -198,12 +232,13 @@ export default function WeeklyAppointmentsCalendar({
       <div className="mt-2 text-[11px] text-site-muted flex flex-wrap items-center gap-3">
         {mode === 'setup' ? (
           <>
-            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/80" />Horario base</span>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-400/80" />Horario ocupado</span>
             <span>Arrastra para agregar o quitar bloques de disponibilidad recurrente</span>
           </>
         ) : (
           <>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" />Slot disponible</span>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-400/80" />Ocupado</span>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-400/80" />Bloque con cita PENDIENTE</span>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/80" />Bloque con cita CONFIRMADA</span>
             <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-slate-600" />Cita pasada</span>

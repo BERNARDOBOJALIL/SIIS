@@ -519,7 +519,22 @@ export async function getAcademicoWeekCitas(academicoId, weekStart) {
  * @param {Date} dateInWeek
  * @returns {Promise<{ generated: boolean, count: number }>}
  */
-export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new Date()) {
+
+function horaEnClase(fecha, horarioClases) {
+  if (!horarioClases) return false
+  const DIAS_KEY = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado']
+  const dia = DIAS_KEY[fecha.getDay()]
+  const minutos = fecha.getHours() * 60 + fecha.getMinutes()
+  const clases = horarioClases[dia] ?? []
+  return clases.some(b => {
+    if (!b?.inicio || !b?.fin) return false
+    const [hI, mI] = b.inicio.split(':').map(Number)
+    const [hF, mF] = b.fin.split(':').map(Number)
+    return minutos >= hI * 60 + mI && minutos < hF * 60 + mF
+  })
+}
+
+export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new Date(), horarioClases = null) {
   const weekStart = getWeekStart(dateInWeek)
   const weekEnd = new Date(weekStart)
   weekEnd.setDate(weekStart.getDate() + 7)
@@ -535,6 +550,22 @@ export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new D
       })
       .filter(Boolean),
   )
+  // Actualizar slots existentes que deberían estar bloqueados por clase
+if (horarioClases) {
+  await Promise.all(
+    existing
+      .filter(slot => slot.source === 'BASE')
+      .map(async slot => {
+        const inicio = toDate(slot.inicio)
+        if (!inicio) return
+        const deberiaEstarBloqueado = horaEnClase(inicio, horarioClases)
+        if (deberiaEstarBloqueado && slot.disponible !== false) {
+          const slotRef = doc(db, `calendarios/${academicoId}/slots`, slot.slotId)
+          await setDoc(slotRef, { disponible: false, updatedAt: serverTimestamp() }, { merge: true })
+        }
+      })
+  )
+}
 
   const horarios = await getHorariosBase(academicoId)
   const slotsToCreate = []
@@ -554,7 +585,7 @@ export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new D
         slotsToCreate.push({
           inicio,
           fin,
-          disponible: true,
+          disponible: !horaEnClase(inicio, horarioClases),
           source: 'BASE',
           weekStart: Timestamp.fromDate(weekStart),
           generatedAt: serverTimestamp(),
@@ -584,7 +615,7 @@ export async function ensureWeeklySlotsGenerated(academicoId, dateInWeek = new D
  * @param {Date} dateInWeek
  * @returns {Promise<{created: number, deleted: number}>}
  */
-export async function syncWeeklySlotsFromBase(academicoId, dateInWeek = new Date()) {
+export async function syncWeeklySlotsFromBase(academicoId, dateInWeek = new Date(), horarioClases = null) {
   const weekStart = getWeekStart(dateInWeek)
   const horarios = await getHorariosBase(academicoId)
   const [existingSlots, weekCitas] = await Promise.all([
@@ -652,7 +683,7 @@ export async function syncWeeklySlotsFromBase(academicoId, dateInWeek = new Date
     .map(range => ({
       inicio: range.inicio,
       fin: range.fin,
-      disponible: true,
+      disponible: !horaEnClase(range.inicio, horarioClases),
       source: 'BASE',
       weekStart: Timestamp.fromDate(weekStart),
       generatedAt: serverTimestamp(),
