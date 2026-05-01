@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context'
 import { Spinner, Button, Modal } from '../components/common'
 import { User, CheckCircle, AlertCircle, LayoutDashboard, CalendarPlus, Search, ArrowLeft, CalendarClock, Timer, MessageSquareText, Info } from 'lucide-react'
@@ -21,6 +22,7 @@ import {
   getRangeBounds,
   startOfWeek,
 } from '../components/appointments/calendarUtils'
+import { ROUTES } from '../constants'
 import {
   getAcademicos,
   getAcademicoSlots,
@@ -41,6 +43,11 @@ import {
 
 export default function AppointmentsPage() {
   const { userData, userRole, authLoading } = useAuth()
+
+  if (userRole === 'ADMINISTRADOR') {
+    return <Navigate to={ROUTES.ADMIN} replace />
+  }
+
   const isStudentDashboard = userRole === 'ESTUDIANTE'
   const isAcademicDashboard = userRole === 'ACADEMICO'
   const isFullHeightMode = isStudentDashboard || isAcademicDashboard

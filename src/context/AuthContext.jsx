@@ -1,7 +1,15 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+} from 'firebase/auth'
 import { auth } from '../services/firebase'
-import { getUserDataFromFirestore } from '../services/firestoreService'
+import { getUserDataFromFirestore, upsertAuthenticatedUserProfile } from '../services/firestoreService'
 
 const AuthContext = createContext(null)
 
@@ -14,8 +22,9 @@ export function AuthProvider({ children }) {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser)
-        // Fetch user data from Firestore using UID
-        const firestoreData = await getUserDataFromFirestore(currentUser.uid)
+        // Garantiza que exista el documento en "usuarios" para cualquier método de acceso.
+        await upsertAuthenticatedUserProfile(currentUser)
+        const firestoreData = await getUserDataFromFirestore(currentUser.uid, currentUser.email)
         setUserData(firestoreData)
       } else {
         setUser(null)
@@ -28,10 +37,50 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = async (email, password) => signInWithEmailAndPassword(auth, email, password)
+
+  const registerStudent = async ({ nombre, email, password }) => {
+    const credentials = await createUserWithEmailAndPassword(auth, email, password)
+    const displayName = String(nombre || '').trim()
+
+    if (displayName) {
+      await updateProfile(credentials.user, { displayName })
+    }
+
+    await upsertAuthenticatedUserProfile(credentials.user, {
+      nombre: displayName,
+      rol: 'ESTUDIANTE',
+    })
+
+    return credentials
+  }
+
+  const loginWithGoogle = async () => {
+    const provider = new GoogleAuthProvider()
+    const credentials = await signInWithPopup(auth, provider)
+
+    await upsertAuthenticatedUserProfile(credentials.user, {
+      rol: 'ESTUDIANTE',
+    })
+
+    return credentials
+  }
+
   const logout = async () => signOut(auth)
 
   return (
-    <AuthContext.Provider value={{ user, userData, login, logout, isAuthenticated: !!user, authLoading, userRole: userData?.rol }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        userData,
+        login,
+        registerStudent,
+        loginWithGoogle,
+        logout,
+        isAuthenticated: !!user,
+        authLoading,
+        userRole: userData?.rol,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

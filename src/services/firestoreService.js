@@ -42,28 +42,165 @@ function toDate(value) {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+function normalizeRoleValue(role) {
+  const normalized = String(role || '').trim().toUpperCase()
+
+  if (!normalized) return ''
+  if (normalized === 'ADMIISTRADOR' || normalized === 'ADMINISTRACION' || normalized === 'ADMIN') return 'ADMINISTRADOR'
+  if (normalized === 'DOCENTE') return 'ACADEMICO'
+  if (normalized === 'ALUMNO') return 'ESTUDIANTE'
+
+  return normalized
+}
+
+async function findUserDocumentByEmail(email) {
+  const rawEmail = String(email || '').trim()
+  if (!rawEmail) return null
+
+  const normalizedEmail = rawEmail.toLowerCase()
+
+  const usersRef = collection(db, 'usuarios')
+  const docsById = new Map()
+
+  const exactSnapshot = await getDocs(query(usersRef, where('email', '==', rawEmail)))
+  exactSnapshot.docs.forEach((docSnapshot) => {
+    docsById.set(docSnapshot.id, docSnapshot)
+  })
+
+  if (normalizedEmail !== rawEmail) {
+    const lowerSnapshot = await getDocs(query(usersRef, where('email', '==', normalizedEmail)))
+    lowerSnapshot.docs.forEach((docSnapshot) => {
+      docsById.set(docSnapshot.id, docSnapshot)
+    })
+  }
+
+  const matches = [...docsById.values()]
+  if (matches.length === 0) return null
+
+  const rolePriority = (role) => {
+    const normalized = normalizeRoleValue(role)
+    if (normalized === 'ADMINISTRADOR') return 3
+    if (normalized === 'ACADEMICO') return 2
+    if (normalized === 'ESTUDIANTE') return 1
+    return 0
+  }
+
+  matches.sort((a, b) => {
+    const roleDiff = rolePriority(b.data()?.rol) - rolePriority(a.data()?.rol)
+    if (roleDiff !== 0) return roleDiff
+    return a.id.localeCompare(b.id)
+  })
+
+  return matches[0]
+}
+
+function shouldPreferFallbackRole(uidRole, fallbackRole) {
+  const normalizedUidRole = normalizeRoleValue(uidRole)
+  const normalizedFallbackRole = normalizeRoleValue(fallbackRole)
+
+  if (!normalizedFallbackRole) return false
+  if (!normalizedUidRole) return true
+  if (normalizedUidRole === normalizedFallbackRole) return false
+
+  // Si el UID quedó con rol por defecto pero existe un perfil por email con rol más específico,
+  // usamos el rol del perfil por email para corregir el desalineamiento.
+  if (normalizedUidRole === 'ESTUDIANTE' && normalizedFallbackRole !== 'ESTUDIANTE') return true
+
+  return false
+}
+
 /**
  * Obtiene los datos del usuario desde la colección 'usuarios' usando su UID.
  * @param {string} uid - UID del usuario autenticado en Firebase
  * @returns {Promise<Object|null>} Objeto con datos del usuario incluyendo rol, o null si no existe
  */
-export async function getUserDataFromFirestore(uid) {
+export async function getUserDataFromFirestore(uid, email = '') {
   try {
     const userDocRef = doc(db, 'usuarios', uid)
     const userSnapshot = await getDoc(userDocRef)
+    const fallbackDoc = await findUserDocumentByEmail(email)
+    const fallbackData = fallbackDoc?.data() || null
 
-    if (!userSnapshot.exists()) {
+    if (userSnapshot.exists()) {
+      const data = userSnapshot.data()
+      const selectedRole = shouldPreferFallbackRole(data?.rol, fallbackData?.rol)
+        ? normalizeRoleValue(fallbackData?.rol)
+        : normalizeRoleValue(data?.rol)
+
+      return {
+        uid,
+        ...data,
+        rol: selectedRole,
+      }
+    }
+
+    if (!fallbackDoc) {
       console.warn(`Usuario con UID ${uid} no encontrado en Firestore`)
       return null
     }
 
+    const data = fallbackDoc.data()
+
     return {
       uid,
-      ...userSnapshot.data(),
+      ...data,
+      rol: normalizeRoleValue(data?.rol),
     }
   } catch (error) {
     console.error('Error fetching user data from Firestore:', error)
     return null
+  }
+}
+
+/**
+ * Crea o actualiza el documento de usuario autenticado en la colección "usuarios".
+ * Si es un usuario nuevo por autoregistro, se fuerza rol ESTUDIANTE.
+ * @param {import('firebase/auth').User} firebaseUser
+ * @param {{ nombre?: string, rol?: string }} [extraData]
+ * @returns {Promise<Object|null>}
+ */
+export async function upsertAuthenticatedUserProfile(firebaseUser, extraData = {}) {
+  if (!firebaseUser?.uid) return null
+
+  const userRef = doc(db, 'usuarios', firebaseUser.uid)
+  const userSnapshot = await getDoc(userRef)
+  let existingData = userSnapshot.exists() ? userSnapshot.data() : {}
+
+  const email = String(firebaseUser.email || existingData.email || '').trim()
+  const fallbackDoc = await findUserDocumentByEmail(email)
+  const fallbackData = fallbackDoc?.data() || {}
+
+  if (!userSnapshot.exists() && fallbackDoc?.exists()) {
+    existingData = fallbackData
+  }
+
+  const fallbackName = String(email.split('@')[0] || 'Estudiante').trim()
+  const providedName = String(extraData.nombre || '').trim()
+  const existingName = String(existingData.nombre || fallbackData.nombre || '').trim()
+  const normalizedExistingRole = normalizeRoleValue(existingData.rol)
+  const normalizedFallbackRole = normalizeRoleValue(fallbackData.rol)
+  const normalizedRequestedRole = normalizeRoleValue(extraData.rol)
+  const normalizedRole = shouldPreferFallbackRole(normalizedExistingRole, normalizedFallbackRole)
+    ? normalizedFallbackRole
+    : (normalizedExistingRole || normalizedRequestedRole || 'ESTUDIANTE')
+
+  const profileData = {
+    uid: firebaseUser.uid,
+    email,
+    nombre: providedName || existingName || String(firebaseUser.displayName || '').trim() || fallbackName,
+    rol: normalizedRole,
+    updatedAt: serverTimestamp(),
+  }
+
+  if (!userSnapshot.exists()) {
+    profileData.createdAt = serverTimestamp()
+  }
+
+  await setDoc(userRef, profileData, { merge: true })
+
+  return {
+    ...existingData,
+    ...profileData,
   }
 }
 
@@ -718,6 +855,92 @@ export async function getSalones() {
     console.error('Error fetching salones:', error)
     return []
   }
+}
+
+function normalizeSalonPayload(data = {}) {
+  const toStringList = (value) => {
+    if (Array.isArray(value)) return value.filter(item => String(item ?? '').trim()).map(item => String(item).trim())
+    if (typeof value === 'string') {
+      return value
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean)
+    }
+    return []
+  }
+
+  const tipoValue = Array.isArray(data.tipo)
+    ? data.tipo.filter(item => String(item ?? '').trim()).map(item => String(item).trim())
+    : String(data.tipo ?? '').trim()
+
+  const idConjuntoNumber = data.idConjunto === '' || data.idConjunto === null || data.idConjunto === undefined
+    ? null
+    : Number(data.idConjunto)
+
+  return {
+    nombre: String(data.nombre ?? '').trim(),
+    nomenclatura: String(data.nomenclatura ?? '').trim(),
+    piso: String(data.piso ?? '').trim(),
+    tipo: Array.isArray(tipoValue) ? tipoValue : tipoValue,
+    idConjunto: Number.isFinite(idConjuntoNumber) ? idConjuntoNumber : null,
+    tipoHorario: String(data.tipoHorario ?? '').trim(),
+    reserva: Boolean(data.reserva),
+    equipamiento: toStringList(data.equipamiento),
+    responsables: Array.isArray(data.responsables) ? data.responsables : [],
+    horario: Array.isArray(data.horario) ? data.horario : [],
+  }
+}
+
+/**
+ * Crea un registro de salón en la base de datos de salones.
+ * @param {Object} data
+ * @returns {Promise<Object>}
+ */
+export async function createSalonRecord(data) {
+  const salonesRef = collection(dbSalones, 'salones')
+  const salonRef = doc(salonesRef)
+  const payload = normalizeSalonPayload(data)
+
+  await setDoc(salonRef, {
+    ...payload,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+
+  return {
+    id: salonRef.id,
+    ...payload,
+  }
+}
+
+/**
+ * Actualiza un registro de salón en la base de datos de salones.
+ * @param {string} salonId
+ * @param {Object} data
+ * @returns {Promise<Object>}
+ */
+export async function updateSalonRecord(salonId, data) {
+  const salonRef = doc(dbSalones, 'salones', salonId)
+  const payload = normalizeSalonPayload(data)
+
+  await setDoc(salonRef, {
+    ...payload,
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+
+  return {
+    id: salonId,
+    ...payload,
+  }
+}
+
+/**
+ * Elimina un registro de salón.
+ * @param {string} salonId
+ * @returns {Promise<void>}
+ */
+export async function deleteSalonRecord(salonId) {
+  await deleteDoc(doc(dbSalones, 'salones', salonId))
 }
 
 /**

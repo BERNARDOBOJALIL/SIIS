@@ -87,6 +87,7 @@ export default function HomePage() {
       className="home-layout flex w-full h-full overflow-hidden"
       style={{ background: 'var(--color-bg)' }}
     >
+
       {/* ── Columna izquierda: Visor 3D ── */}
       <section
         className="home-viewer flex-1 min-w-0 flex flex-col overflow-hidden"

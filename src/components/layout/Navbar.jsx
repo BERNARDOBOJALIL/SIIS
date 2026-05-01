@@ -4,24 +4,45 @@ import { useWeather } from '../../hooks/useWeather'
 import { useAuth } from '../../context'
 import { useChatContext } from './MainLayout'
 import { ROUTES } from '../../constants'
+import { getUserDataFromFirestore } from '../../services/firestoreService'
 import { Button, Input, Modal } from '../common'
 import {
   Menu, X, Home, Lock, Calendar, MessageCircle, Factory, Users,
-  Wind, Thermometer, CloudOff, Loader2, School
+  Wind, Thermometer, CloudOff, Loader2, School, Shield
 } from 'lucide-react'
 
 export default function Navbar() {
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [loginOpen, setLoginOpen] = useState(false)
+  const [isRegisterMode, setIsRegisterMode] = useState(false)
+  const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
   const [pendingPath, setPendingPath] = useState(ROUTES.APPOINTMENTS)
   const { weather, loading } = useWeather()
-  const { user, isAuthenticated, login, logout, authLoading } = useAuth()
+  const {
+    user,
+    userRole,
+    isAuthenticated,
+    login,
+    registerStudent,
+    loginWithGoogle,
+    logout,
+    authLoading,
+  } = useAuth()
   const { chatOpen, setChatOpen } = useChatContext()
+
+  const resetAuthForm = () => {
+    setFullName('')
+    setEmail('')
+    setPassword('')
+    setConfirmPassword('')
+    setLoginError('')
+  }
 
   const handleAppointmentsClick = () => {
     if (isAuthenticated) {
@@ -33,6 +54,15 @@ export default function Navbar() {
     setPendingPath(ROUTES.APPOINTMENTS)
     setMenuOpen(false)
     setLoginError('')
+    setIsRegisterMode(false)
+    setLoginOpen(true)
+  }
+
+  const handleOpenLoginModal = () => {
+    setMenuOpen(false)
+    setPendingPath(ROUTES.HOME)
+    setLoginError('')
+    setIsRegisterMode(false)
     setLoginOpen(true)
   }
 
@@ -42,13 +72,78 @@ export default function Navbar() {
     setLoginLoading(true)
 
     try {
-      await login(email, password)
+      let credentials = null
+
+      if (isRegisterMode) {
+        const trimmedName = fullName.trim()
+        if (!trimmedName) {
+          throw new Error('name-required')
+        }
+        if (password.length < 6) {
+          throw new Error('weak-password')
+        }
+        if (password !== confirmPassword) {
+          throw new Error('password-mismatch')
+        }
+
+        credentials = await registerStudent({
+          nombre: trimmedName,
+          email: email.trim(),
+          password,
+        })
+      } else {
+        credentials = await login(email.trim(), password)
+      }
+
+      const authUser = credentials?.user
+      const profile = authUser?.uid
+        ? await getUserDataFromFirestore(authUser.uid, authUser.email)
+        : null
+      const nextPath = profile?.rol === 'ADMINISTRADOR' ? ROUTES.ADMIN : pendingPath
+
       setLoginOpen(false)
-      setEmail('')
-      setPassword('')
-      navigate(pendingPath)
+      resetAuthForm()
+      navigate(nextPath)
+    } catch (error) {
+      const code = error?.code || error?.message
+
+      if (code === 'name-required') {
+        setLoginError('Ingresa tu nombre para completar el registro.')
+      } else if (code === 'password-mismatch') {
+        setLoginError('Las contraseñas no coinciden.')
+      } else if (code === 'weak-password' || code === 'auth/weak-password') {
+        setLoginError('La contraseña debe tener al menos 6 caracteres.')
+      } else if (code === 'auth/email-already-in-use') {
+        setLoginError('Este correo ya está registrado. Intenta iniciar sesión.')
+      } else if (code === 'auth/invalid-email') {
+        setLoginError('El correo no es válido.')
+      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        setLoginError('No se pudo iniciar sesión. Verifica tu correo y contraseña.')
+      } else {
+        setLoginError('No se pudo completar la autenticación. Inténtalo de nuevo.')
+      }
+    } finally {
+      setLoginLoading(false)
+    }
+  }
+
+  const handleGoogleAuth = async () => {
+    setLoginError('')
+    setLoginLoading(true)
+
+    try {
+      const credentials = await loginWithGoogle()
+      const authUser = credentials?.user
+      const profile = authUser?.uid
+        ? await getUserDataFromFirestore(authUser.uid, authUser.email)
+        : null
+      const nextPath = profile?.rol === 'ADMINISTRADOR' ? ROUTES.ADMIN : pendingPath
+
+      setLoginOpen(false)
+      resetAuthForm()
+      navigate(nextPath)
     } catch {
-      setLoginError('No se pudo iniciar sesión. Verifica tu correo y contraseña.')
+      setLoginError('No se pudo continuar con Google. Inténtalo de nuevo.')
     } finally {
       setLoginLoading(false)
     }
@@ -95,6 +190,26 @@ export default function Navbar() {
 
       {/* ── CENTRO: Widget de clima + Botón de Chat ── */}
       <div className="flex items-center gap-2">
+        {!authLoading && isAuthenticated && userRole && (
+          <span
+            className="hidden md:inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide"
+            style={{ background: 'rgba(255,255,255,0.18)', color: 'white', border: '1px solid rgba(255,255,255,0.26)' }}
+          >
+            {userRole}
+          </span>
+        )}
+
+        {!authLoading && !isAuthenticated && (
+          <button
+            type="button"
+            onClick={handleOpenLoginModal}
+            className="inline-flex items-center rounded-full px-3 py-1.5 text-xs font-semibold"
+            style={{ background: 'rgba(255,255,255,0.18)', color: 'white', border: '1px solid rgba(255,255,255,0.28)' }}
+          >
+            Iniciar sesión
+          </button>
+        )}
+
         {/* Botón de Chat */}
         <button
           onClick={() => setChatOpen(o => !o)}
@@ -183,6 +298,7 @@ export default function Navbar() {
 { label: 'Salones',  path: ROUTES.SALONES,  Icon: School,  active: true },
 { label: 'Personal', path: ROUTES.PERSONAL, Icon: Users,   active: true },
 { label: 'Máquinas', path: ROUTES.MAQUINAS, Icon: Factory, active: true },
+...(userRole === 'ADMINISTRADOR' ? [{ label: 'Administración', path: ROUTES.ADMIN, Icon: Shield, active: true }] : []),
 { label: 'Próximamente…', path: '#',        Icon: Lock,    active: false },
             ].map(({ label, path, Icon, active }) => (
               <Link
@@ -230,10 +346,25 @@ export default function Navbar() {
 
       <Modal
         isOpen={loginOpen}
-        onClose={() => !loginLoading && setLoginOpen(false)}
-        title="Iniciar sesión"
+        onClose={() => {
+          if (loginLoading) return
+          setLoginOpen(false)
+          resetAuthForm()
+        }}
+        title={isRegisterMode ? 'Crear cuenta de estudiante' : 'Iniciar sesión'}
       >
         <form className="flex flex-col gap-3" onSubmit={handleLoginSubmit}>
+          {isRegisterMode && (
+            <Input
+              label="Nombre"
+              name="fullName"
+              value={fullName}
+              onChange={(event) => setFullName(event.target.value)}
+              placeholder="Tu nombre"
+              required
+            />
+          )}
+
           <Input
             label="Correo"
             name="email"
@@ -254,11 +385,58 @@ export default function Navbar() {
             required
           />
 
+          {isRegisterMode && (
+            <Input
+              label="Confirmar contraseña"
+              name="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="••••••••"
+              required
+            />
+          )}
+
           {loginError && <p className="text-xs text-red-500">{loginError}</p>}
 
           <Button type="submit" disabled={loginLoading} className="mt-1">
-            {loginLoading ? 'Ingresando...' : 'Entrar'}
+            {loginLoading
+              ? 'Procesando...'
+              : isRegisterMode
+                ? 'Registrarme como estudiante'
+                : 'Entrar'}
           </Button>
+
+          <button
+            type="button"
+            disabled={loginLoading}
+            onClick={handleGoogleAuth}
+            className="w-full rounded-md border px-3 py-2 text-sm font-medium transition"
+            style={{ borderColor: 'var(--color-border)', color: 'var(--color-text)' }}
+          >
+            Continuar con Google
+          </button>
+
+          <p className="text-[11px] text-center" style={{ color: 'var(--color-text-muted)' }}>
+            {isRegisterMode
+              ? 'El autoregistro solo crea cuentas con rol ESTUDIANTE.'
+              : 'Si no tienes cuenta, puedes registrarte como ESTUDIANTE.'}
+          </p>
+
+          <button
+            type="button"
+            disabled={loginLoading}
+            onClick={() => {
+              setIsRegisterMode((prev) => !prev)
+              setLoginError('')
+              setPassword('')
+              setConfirmPassword('')
+            }}
+            className="text-xs underline underline-offset-2"
+            style={{ color: 'var(--color-primary)' }}
+          >
+            {isRegisterMode ? 'Ya tengo cuenta, iniciar sesión' : 'Crear cuenta nueva'}
+          </button>
         </form>
       </Modal>
     </header>

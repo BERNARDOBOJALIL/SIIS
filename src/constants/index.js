@@ -26,6 +26,7 @@ export const ROUTES = {
   SALONES: '/salones',
   PERSONAL: '/personal',
   MAQUINAS: '/maquinas',
+  ADMIN: '/admin',
   LOGIN: '/login',
 }
 
