@@ -121,20 +121,20 @@ function formatSeconds(seconds) {
   return `${secs} s`
 }
 
-function getRiskLevel(seconds, maxSeconds) {
-  if (!maxSeconds) return 'Sin referencia'
-  const ratio = seconds / maxSeconds
-  if (ratio >= 0.8 || seconds >= 6 * 3600) return 'Alta'
-  if (ratio >= 0.5 || seconds >= 3 * 3600) return 'Media'
+function getRiskLevel(seconds) {
+  const total = Number(seconds || 0)
+  const monthSeconds = 30 * 24 * 3600
+  if (total > 4 * monthSeconds) return 'Alta'
+  if (total >= 2 * monthSeconds) return 'Media'
   return 'Baja'
 }
 
-function buildMaintenanceNote(item, maxSeconds) {
+function buildMaintenanceNote(item) {
   const meta = MACHINE_CATALOG[item.machine_id] || {}
-  const risk = getRiskLevel(item.occupied_seconds, maxSeconds)
+  const risk = getRiskLevel(item.occupied_seconds)
 
   if (risk === 'Alta') {
-    return `${meta.maintenance || 'Revisar desgaste, limpieza y calibración.'} Prioridad alta por carga acumulada.`
+    return `${meta.maintenance || 'Revisar desgaste, limpieza y calibración.'} Prioridad alta por uso acumulado.`
   }
 
   if (risk === 'Media') {
@@ -266,8 +266,7 @@ function SalonEditorCard({ title, salon, saving, onSave, onDelete, allowDelete =
 
 function MachineReportsCard({ report, loading, reportScope, onScopeChange, onRefresh, onExport }) {
   const totalSeconds = report.reduce((sum, item) => sum + (item.occupied_seconds || 0), 0)
-  const maxSeconds = report.reduce((max, item) => Math.max(max, item.occupied_seconds || 0), 0)
-  const maintenanceCount = report.filter(item => getRiskLevel(item.occupied_seconds || 0, maxSeconds) === 'Alta').length
+  const maintenanceCount = report.filter(item => getRiskLevel(item.occupied_seconds || 0) === 'Alta').length
 
   return (
     <section className="rounded-3xl border bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)]" style={{ borderColor: 'var(--color-border)' }}>
@@ -345,7 +344,7 @@ function MachineReportsCard({ report, loading, reportScope, onScopeChange, onRef
               <tbody>
                 {report.map((item, index) => {
                   const meta = MACHINE_CATALOG[item.machine_id] || {}
-                  const risk = getRiskLevel(item.occupied_seconds || 0, maxSeconds)
+                  const risk = getRiskLevel(item.occupied_seconds || 0)
                   return (
                     <tr key={`${item.machine_id}-${item.date || 'hoy'}-${index}`} className="border-t" style={{ borderColor: 'var(--color-border)' }}>
                       <td className="px-4 py-3">
@@ -364,7 +363,7 @@ function MachineReportsCard({ report, loading, reportScope, onScopeChange, onRef
                           {risk}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs leading-relaxed" style={{ color: 'var(--color-site-black)' }}>{buildMaintenanceNote(item, maxSeconds)}</td>
+                      <td className="px-4 py-3 text-xs leading-relaxed" style={{ color: 'var(--color-site-black)' }}>{buildMaintenanceNote(item)}</td>
                     </tr>
                   )
                 })}
@@ -549,7 +548,6 @@ export default function AdminDashboard() {
     if (report.length === 0) return
 
     const doc = new jsPDF('p', 'mm', 'a4')
-    const maxSeconds = report.reduce((max, item) => Math.max(max, item.occupied_seconds || 0), 0)
     const totalSeconds = report.reduce((sum, item) => sum + (item.occupied_seconds || 0), 0)
     const createdAt = new Date().toLocaleString('es-MX')
     const reportTitle = reportScope === 'all' ? 'Reporte historico de uso de maquinas' : 'Reporte de uso de maquinas'
@@ -566,13 +564,13 @@ export default function AdminDashboard() {
       head: [['Fecha', 'Maquina', 'Ocupacion', 'Riesgo', 'Mantenimiento sugerido']],
       body: report.map(item => {
         const meta = MACHINE_CATALOG[item.machine_id] || {}
-        const risk = getRiskLevel(item.occupied_seconds || 0, maxSeconds)
+        const risk = getRiskLevel(item.occupied_seconds || 0)
         return [
           item.date || 'Sin fecha',
           `${meta.label || item.machine_id}\n${item.machine_id}`,
           `${formatSeconds(item.occupied_seconds)}\n${((item.occupied_seconds || 0) / 3600).toFixed(2)} h`,
           risk,
-          buildMaintenanceNote(item, maxSeconds),
+          buildMaintenanceNote(item),
         ]
       }),
       styles: {
