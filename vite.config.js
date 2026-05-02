@@ -29,6 +29,26 @@ function immutable3DAssetHeaders() {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), immutable3DAssetHeaders()],
+  server: {
+    proxy: {
+      '/trackny-proxy': {
+        target: 'https://trackny.onrender.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/trackny-proxy/, ''),
+      },
+    },
+  },
+  preview: {
+    proxy: {
+      '/trackny-proxy': {
+        target: 'https://trackny.onrender.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/trackny-proxy/, ''),
+      },
+    },
+  },
   build: {
     rollupOptions: {
       output: {

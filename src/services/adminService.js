@@ -1,4 +1,4 @@
-import { http } from './http'
+import { TRACKNY_HTTP_URL } from '../constants'
 
 function normalizeMachineId(value) {
   return String(value || '')
@@ -42,16 +42,48 @@ function buildFromTotals(response) {
 }
 
 function normalizeMachineReport(response) {
+  if (response?.machine_id || response?.machineId) return [normalizeReportItem(response)]
   if (Array.isArray(response)) return response.map(normalizeReportItem)
   if (Array.isArray(response?.records)) return response.records.map(normalizeReportItem)
   if (Array.isArray(response?.data)) return response.data.map(normalizeReportItem)
+  if (Array.isArray(response?.items)) return response.items.map(normalizeReportItem)
   if (response?.totals_seconds || response?.totalsSeconds || response?.totals) {
     return buildFromTotals(response)
   }
   return []
 }
 
+function buildTracknyEndpoint(path) {
+  return import.meta.env.DEV ? `/trackny-proxy${path}` : `${TRACKNY_HTTP_URL}${path}`
+}
+
+async function fetchTracknyJson(path) {
+  const response = await fetch(buildTracknyEndpoint(path))
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}))
+    const error = new Error(errorPayload.message || `Error ${response.status}`)
+    error.status = response.status
+    throw error
+  }
+
+  return response.json()
+}
+
+async function fetchTracknyOccupancyToday() {
+  return fetchTracknyJson('/api/ocupacion/hoy')
+}
+
 export async function getMachineOccupancyReport() {
-  const response = await http.get('/ocupacion/hoy')
+  const response = await fetchTracknyOccupancyToday()
+  return normalizeMachineReport(response)
+}
+
+export async function getMachineOccupancyRecords(scope = 'today') {
+  if (scope !== 'all') {
+    return getMachineOccupancyReport()
+  }
+
+  const response = await fetchTracknyJson('/api/ocupacion/registros')
   return normalizeMachineReport(response)
 }

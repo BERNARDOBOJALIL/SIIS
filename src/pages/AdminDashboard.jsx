@@ -24,7 +24,7 @@ import {
   getSalonById,
   updateSalonRecord,
 } from '../services/firestoreService'
-import { getMachineOccupancyReport } from '../services/adminService'
+import { getMachineOccupancyRecords } from '../services/adminService'
 
 const MACHINE_CATALOG = {
   zona1: {
@@ -264,7 +264,7 @@ function SalonEditorCard({ title, salon, saving, onSave, onDelete, allowDelete =
   )
 }
 
-function MachineReportsCard({ report, loading, onRefresh, onExport }) {
+function MachineReportsCard({ report, loading, reportScope, onScopeChange, onRefresh, onExport }) {
   const totalSeconds = report.reduce((sum, item) => sum + (item.occupied_seconds || 0), 0)
   const maxSeconds = report.reduce((max, item) => Math.max(max, item.occupied_seconds || 0), 0)
   const maintenanceCount = report.filter(item => getRiskLevel(item.occupied_seconds || 0, maxSeconds) === 'Alta').length
@@ -274,9 +274,35 @@ function MachineReportsCard({ report, loading, onRefresh, onExport }) {
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--color-text-muted)' }}>Reporte de máquinas</p>
-          <h3 className="mt-1 text-base font-bold" style={{ color: 'var(--color-site-black)' }}>Ocupación diaria y mantenimiento sugerido</h3>
+          <h3 className="mt-1 text-base font-bold" style={{ color: 'var(--color-site-black)' }}>
+            {reportScope === 'all' ? 'Histórico completo y mantenimiento sugerido' : 'Ocupación diaria y mantenimiento sugerido'}
+          </h3>
         </div>
         <div className="flex flex-wrap gap-2">
+          <div className="inline-flex rounded-full border p-0.5" style={{ borderColor: 'var(--color-border)' }}>
+            <button
+              type="button"
+              onClick={() => onScopeChange('today')}
+              className="rounded-full px-3 py-1.5 text-xs font-semibold"
+              style={{
+                background: reportScope === 'today' ? 'var(--color-primary)' : 'transparent',
+                color: reportScope === 'today' ? '#fff' : 'var(--color-text)',
+              }}
+            >
+              Hoy
+            </button>
+            <button
+              type="button"
+              onClick={() => onScopeChange('all')}
+              className="rounded-full px-3 py-1.5 text-xs font-semibold"
+              style={{
+                background: reportScope === 'all' ? 'var(--color-primary)' : 'transparent',
+                color: reportScope === 'all' ? '#fff' : 'var(--color-text)',
+              }}
+            >
+              Todos
+            </button>
+          </div>
           <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: 'var(--color-border)', color: 'var(--color-text)' }}>
             <RefreshCw size={12} />
             Actualizar
@@ -289,7 +315,7 @@ function MachineReportsCard({ report, loading, onRefresh, onExport }) {
       </div>
 
       <div className="mt-4 grid gap-3 md:grid-cols-3">
-        <Metric label="Máquinas reportadas" value={report.length} icon={Database} />
+        <Metric label={reportScope === 'all' ? 'Registros' : 'Máquinas reportadas'} value={report.length} icon={Database} />
         <Metric label="Tiempo acumulado" value={formatSeconds(totalSeconds)} icon={BarChart3} />
         <Metric label="Mantenimientos sugeridos" value={maintenanceCount} icon={Wrench} />
       </div>
@@ -301,7 +327,7 @@ function MachineReportsCard({ report, loading, onRefresh, onExport }) {
         </div>
       ) : report.length === 0 ? (
         <div className="mt-4 rounded-2xl border border-dashed px-4 py-8 text-sm" style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-muted)' }}>
-          No hay datos de ocupación disponibles para hoy.
+          {reportScope === 'all' ? 'No hay registros históricos de ocupación.' : 'No hay datos de ocupación disponibles para hoy.'}
         </div>
       ) : (
         <div className="mt-4 overflow-hidden rounded-2xl border" style={{ borderColor: 'var(--color-border)' }}>
@@ -309,6 +335,7 @@ function MachineReportsCard({ report, loading, onRefresh, onExport }) {
             <table className="w-full text-sm">
               <thead style={{ background: 'var(--color-bg)' }}>
                 <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>Fecha</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>Máquina</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>Ocupación</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--color-text-muted)' }}>Riesgo</th>
@@ -316,11 +343,14 @@ function MachineReportsCard({ report, loading, onRefresh, onExport }) {
                 </tr>
               </thead>
               <tbody>
-                {report.map((item) => {
+                {report.map((item, index) => {
                   const meta = MACHINE_CATALOG[item.machine_id] || {}
                   const risk = getRiskLevel(item.occupied_seconds || 0, maxSeconds)
                   return (
-                    <tr key={`${item.machine_id}-${item.date || 'hoy'}`} className="border-t" style={{ borderColor: 'var(--color-border)' }}>
+                    <tr key={`${item.machine_id}-${item.date || 'hoy'}-${index}`} className="border-t" style={{ borderColor: 'var(--color-border)' }}>
+                      <td className="px-4 py-3">
+                        <p className="font-medium" style={{ color: 'var(--color-site-black)' }}>{item.date || 'Sin fecha'}</p>
+                      </td>
                       <td className="px-4 py-3">
                         <p className="font-semibold" style={{ color: 'var(--color-site-black)' }}>{meta.label || item.machine_id}</p>
                         <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{item.machine_id}</p>
@@ -381,6 +411,7 @@ export default function AdminDashboard() {
   const [searchLoading, setSearchLoading] = useState(false)
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [report, setReport] = useState([])
+  const [reportScope, setReportScope] = useState('today')
   const [reportLoading, setReportLoading] = useState(true)
   const [reportError, setReportError] = useState('')
 
@@ -461,11 +492,11 @@ export default function AdminDashboard() {
     return scored.slice(0, 6).map(x => x.s)
   }
 
-  const refreshReport = async () => {
+  const refreshReport = async (scope = reportScope) => {
     setReportLoading(true)
     setReportError('')
     try {
-      const data = await getMachineOccupancyReport()
+      const data = await getMachineOccupancyRecords(scope)
       setReport(data)
     } catch (error) {
       setReportError(error?.message || 'No se pudo cargar el reporte de máquinas.')
@@ -475,9 +506,15 @@ export default function AdminDashboard() {
     }
   }
 
+  const handleReportScopeChange = async (scope) => {
+    if (scope === reportScope) return
+    setReportScope(scope)
+    await refreshReport(scope)
+  }
+
   useEffect(() => {
     refreshSalones()
-    refreshReport()
+    refreshReport('today')
   }, [])
 
   const handleSaveSalon = async (salonId, payload) => {
@@ -515,21 +552,23 @@ export default function AdminDashboard() {
     const maxSeconds = report.reduce((max, item) => Math.max(max, item.occupied_seconds || 0), 0)
     const totalSeconds = report.reduce((sum, item) => sum + (item.occupied_seconds || 0), 0)
     const createdAt = new Date().toLocaleString('es-MX')
+    const reportTitle = reportScope === 'all' ? 'Reporte historico de uso de maquinas' : 'Reporte de uso de maquinas'
 
     doc.setFontSize(18)
-    doc.text('Reporte de uso de máquinas', 14, 18)
+    doc.text(reportTitle, 14, 18)
     doc.setFontSize(10)
     doc.text(`Generado: ${createdAt}`, 14, 25)
     doc.text(`Total acumulado: ${formatSeconds(totalSeconds)}`, 14, 30)
-    doc.text(`Máquinas evaluadas: ${report.length}`, 14, 35)
+    doc.text(`${reportScope === 'all' ? 'Registros evaluados' : 'Maquinas evaluadas'}: ${report.length}`, 14, 35)
 
     autoTable(doc, {
       startY: 42,
-      head: [['Máquina', 'Ocupación', 'Riesgo', 'Mantenimiento sugerido']],
+      head: [['Fecha', 'Maquina', 'Ocupacion', 'Riesgo', 'Mantenimiento sugerido']],
       body: report.map(item => {
         const meta = MACHINE_CATALOG[item.machine_id] || {}
         const risk = getRiskLevel(item.occupied_seconds || 0, maxSeconds)
         return [
+          item.date || 'Sin fecha',
           `${meta.label || item.machine_id}\n${item.machine_id}`,
           `${formatSeconds(item.occupied_seconds)}\n${((item.occupied_seconds || 0) / 3600).toFixed(2)} h`,
           risk,
@@ -550,7 +589,8 @@ export default function AdminDashboard() {
     })
 
     const safeDate = new Date().toISOString().slice(0, 10)
-    doc.save(`reporte-maquinas-${safeDate}.pdf`)
+    const filePrefix = reportScope === 'all' ? 'reporte-maquinas-historico' : 'reporte-maquinas-hoy'
+    doc.save(`${filePrefix}-${safeDate}.pdf`)
   }
 
   const salonSummary = useMemo(() => ({
@@ -703,7 +743,9 @@ export default function AdminDashboard() {
             <MachineReportsCard
               report={report}
               loading={reportLoading}
-              onRefresh={refreshReport}
+              reportScope={reportScope}
+              onScopeChange={handleReportScopeChange}
+              onRefresh={() => refreshReport(reportScope)}
               onExport={exportPdf}
             />
           </section>
