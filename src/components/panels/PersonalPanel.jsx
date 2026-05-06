@@ -226,8 +226,13 @@ export default function PersonalPanel() {
   const departamentos = ['todos', ...new Set(personal.map(p => p.departamento).filter(Boolean))]
 
   const filtrados = personal
-    .map(p => ({ ...p, disp: estaDisponiblePersona(horarios[p.uid]) }))
-    .filter(p => {
+  .map(p => ({ ...p, disp: estaDisponiblePersona(horarios[p.uid]) }))
+  .sort((a, b) => {
+    const nomA = a.ubicacion ?? ''
+    const nomB = b.ubicacion ?? ''
+    return nomA.localeCompare(nomB, 'es', { numeric: true })
+  })
+  .filter(p => {
       const texto = busqueda.toLowerCase()
       const coincideTexto = !texto ||
         p.nombre?.toLowerCase().includes(texto) ||

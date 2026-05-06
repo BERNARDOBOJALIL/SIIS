@@ -503,9 +503,12 @@ function StudentAppointmentsView({ estudianteId }) {
                   className="text-left p-4 bg-site-bg border border-site-border rounded-lg hover:border-primary/50 hover:shadow-sm transition"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
-                      <User size={16} className="text-primary flex-shrink-0" />
-                    </div>
+                    <div className="w-9 h-9 rounded-full overflow-hidden border border-primary/20 flex items-center justify-center bg-primary/10 shrink-0">
+  {academicoItem.foto
+    ? <img src={academicoItem.foto} alt={academicoItem.nombre} className="w-full h-full object-cover" />
+    : <User size={16} className="text-primary flex-shrink-0" />
+  }
+</div>
                     <div>
                       <div className="font-medium text-sm text-site-text">{academicoItem.nombre}</div>
                       <div className="text-xs text-site-muted">{academicoItem.email}</div>
