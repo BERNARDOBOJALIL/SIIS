@@ -15,8 +15,16 @@ import { getSalones } from '../../services/firestoreService'
 import { SIIS_CHAT_CONTEXT_KEYS, SIIS_CHAT_EVENT_NAMES } from '../../utils'
 
 const MODELS = [
-  { file: '/assempbfinal 1.glb', nav: '/NAVMESH_EXPORT_PB.glb', label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] },
-  { file: '/assempaiditfinal.glb', nav: '/NAVMESH_EXPORT_PA.glb', label: 'Planta Alta',    short: 'PA', entryName: 'Sólido27-1', origin: [22.3, -1.60, 29] },
+  { 
+    file: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/assempbfinal%201.glb?alt=media&token=e82e522e-1fdf-47a6-b072-4839673c8046', 
+    nav: '/NAVMESH_EXPORT_PB.glb',   // si este sigue en /public déjalo así
+    label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] 
+  },
+  { 
+    file: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/assempaiditfinal.glb?alt=media', 
+    nav: '/NAVMESH_EXPORT_PA.glb',
+    label: 'Planta Alta', short: 'PA', entryName: 'Sólido27-1', origin: [22.3, -1.60, 29] 
+  },
 ]
 const ASSET_REVISION = '20260406-1'
 
