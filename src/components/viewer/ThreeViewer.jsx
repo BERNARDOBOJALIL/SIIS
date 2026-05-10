@@ -17,12 +17,12 @@ import { SIIS_CHAT_CONTEXT_KEYS, SIIS_CHAT_EVENT_NAMES } from '../../utils'
 const MODELS = [
   { 
     file: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/assempbfinal%201.glb?alt=media&token=e82e522e-1fdf-47a6-b072-4839673c8046', 
-    nav: '/NAVMESH_EXPORT_PB.glb',   // si este sigue en /public déjalo así
+    nav: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/NAVMESH_EXPORT_PB.glb?alt=media&token=ee5589ef-4464-4718-b875-671cd55925fa',   // si este sigue en /public déjalo así
     label: 'Planta Baja', short: 'PB', entryName: 'Sólido44-2', origin: [12.94, -4.60, 32.47] 
   },
   { 
     file: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/assempaiditfinal.glb?alt=media', 
-    nav: '/NAVMESH_EXPORT_PA.glb',
+    nav: 'https://firebasestorage.googleapis.com/v0/b/siis-9593c.firebasestorage.app/o/NAVMESH_EXPORT_PA.glb?alt=media&token=bfcf56db-0222-4153-a554-7f1e02eee42e',
     label: 'Planta Alta', short: 'PA', entryName: 'Sólido27-1', origin: [22.3, -1.60, 29] 
   },
 ]
