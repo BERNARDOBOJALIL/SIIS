@@ -25,15 +25,53 @@ self.addEventListener('activate', event => {
 })
 
 async function cacheFirst(request) {
-  const cache = await caches.open(MODEL_CACHE)
-  const cached = await cache.match(request)
+  // Deprecated for model assets; prefer validated network-first flow.
+  const cached = await caches.match(request)
   if (cached) return cached
-
-  const response = await fetch(request)
-  if (response && response.ok) {
-    cache.put(request, response.clone())
+  try {
+    const response = await fetch(request)
+    return response
+  } catch (err) {
+    return cached || Response.error()
   }
-  return response
+}
+
+async function isResponseGLB(resp) {
+  try {
+    const buf = await resp.clone().arrayBuffer()
+    if (buf.byteLength < 4) return false
+    const view = new Uint8Array(buf, 0, 4)
+    // 'glTF' ASCII header: 0x67 0x6c 0x54 0x46
+    return view[0] === 0x67 && view[1] === 0x6c && view[2] === 0x54 && view[3] === 0x46
+  } catch (e) {
+    return false
+  }
+}
+
+async function fetchAndValidateModel(request) {
+  // Try network-first but avoid storing non-GLB responses (e.g. Git LFS pointers)
+  try {
+    const netResp = await fetch(request, { method: 'GET', credentials: 'same-origin', cache: 'no-store' })
+    if (netResp && netResp.ok) {
+      const ok = await isResponseGLB(netResp)
+      if (ok) {
+        const cache = await caches.open(MODEL_CACHE)
+        await cache.put(request, netResp.clone())
+        return netResp
+      }
+      // Not a GLB: don't cache; try cached version if available
+      const cached = await caches.match(request)
+      if (cached) return cached
+      return netResp
+    }
+    const cached = await caches.match(request)
+    if (cached) return cached
+    return netResp
+  } catch (err) {
+    const cached = await caches.match(request)
+    if (cached) return cached
+    throw err
+  }
 }
 
 async function warmModelCache(urls = []) {
@@ -76,6 +114,6 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url)
   if (!isModelAsset(url)) return
 
-  // OPT: cache heavy 3D assets after first download for repeat visits.
-  event.respondWith(cacheFirst(request))
+  // OPT: network-first for heavy 3D assets, but validate before caching.
+  event.respondWith(fetchAndValidateModel(request))
 })
